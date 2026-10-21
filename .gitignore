@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# 档案库与日志绝不入库（含客户信息）
+.dbtoolchain/
+store.db
+*.db
+logs/
+
+# 知识包可能含客户数据
+*.profile.json
+exports/
+
+.idea/
+.vscode/
+.pytest_cache/
+.ruff_cache/
+.DS_Store
