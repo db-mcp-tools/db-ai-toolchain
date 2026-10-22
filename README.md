@@ -1,194 +1,121 @@
-# db-ai-toolchain —— 数据库生态 AI 工具链
+# db-ai-toolchain
 
-> MCP 先行 → 共享内核 → 多 Agent 编排。
-> 目标不是做一个工具，是做一条别人拿不走的数据库能力链。
+数据库生态的 AI 工具链 —— **11 个可独立安装的仓库**，不是一个大而全的 Agent。
 
-```bash
-# 安装（Python 3.10+）
-python -m venv .venv && .venv/Scripts/python -m pip install -r requirements.txt
+> 每个 MCP 只装自己需要的，装一个不会拖进其他五个。
+> 跨 MCP 的协作只通过结果里的 `next_actions` 声明，**不做代码级互相 import**。
 
-# 跑测试（不需要真实数据库）
-python tests/test_all.py
+## 仓库清单
 
-# CLI
-python cli/dbt.py tools                 # 列出全部 86 个工具
-python cli/dbt.py review "SELECT * FROM a, b"
-python cli/dbt.py watch 主从延迟突增     # 零历史也能用
-
-# 编排：按 next_actions 自动串起跨 MCP 链路
-python cli/dbt.py run --seed sql-review.review_sql --sql "SELECT * FROM t ORDER BY RAND() LIMIT 1000"
-python cli/dbt.py run --recipe orchestrator/examples/safe_change.json   # 确定性流水线
-```
-
----
-
-## 目录结构
-
-```
-db-ai-toolchain/
-├── DESIGN.md              ★ 顶层契约：工具清单 / 闭环 / IO 协议 / 交互口（改代码前先看它）
-├── packages/dbcore/       共享内核（任何 MCP 都不得重复实现下列能力）
-│   ├── protocol.py        统一返回信封 dbt.result/v1 + 错误码
-│   ├── baselines.py       ★ Tier0 静态基线（各引擎阈值，每条带依据）
-│   ├── signature.py       ★ Tier0 故障指纹库（18 种已知故障模式）
-│   ├── rca.py             根因推理（Tier0 可用）
-│   ├── rules.py           31 条静态规则 + 规则元数据
-│   ├── fix.py             修正引擎（发现 → 给出可执行改法）
-│   ├── verify.py          等价性 / 执行计划对比
-│   ├── advisor.py         索引建议（含重复/前缀劝退）
-│   ├── risk.py            变更风险矩阵（MySQL / PG 两套独立规则）
-│   ├── execution.py       变更状态机（dry-run→灰度→回滚）
-│   ├── migration.py       异构迁移：方言差异 + 一致性校验
-│   ├── semantics.py       口径解析 / diff / 扇出 / 血缘 / 下钻
-│   ├── plan.py            执行计划归一化（MySQL/PG/Oracle → 同一结构）
-│   ├── metrics.py         指标归一化（同一概念一个名字）
-│   ├── bootstrap.py       冷启动一次性采集器（只读）
-│   ├── scanner.py         从文件 / git diff 抽 SQL
-│   ├── profile_store.py   ★ 共享档案库（唯一数据落点）
-│   └── report.py          报告渲染
-│
-├── servers/               一个 MCP 一个文件夹，可独立发版
-│   ├── sql-review/        15 工具  体检 → 修正 → 验证（支持 profile / 规则启停）
-│   ├── change-risk/       13 工具  风险 → dry-run → 灰度 → 回滚 → 留痕
-│   ├── dbwatch/           15 工具  值守 + 根因（Tier0 可用）
-│   ├── migration-diff/    12 工具  国产化迁移正确性验证
-│   ├── data-semantics/    13 工具  数据口径治理
-│   └── profile-hub/       25 工具  档案中枢（唯一数据落点）
-│
-├── cli/dbt.py             单一 CLI，可驱动全部能力（CI 用）
-├── tests/test_all.py      143 项回归测试（不需要真实数据库）
-└── requirements.txt
-```
-
----
-
-## 六个 MCP 与闭环
-
-| MCP | 工具 | 闭环 |
-|---|---|---|
-| **sql-review** | 14 | 发现问题 → 给出修法 → 复验证明改对了 |
-| **change-risk** | 13 | 风险评估 → 窗口检查 → dry-run → 灰度 → 回滚 → 留痕 |
-| **dbwatch** | 15 | 症状/快照 → 假设排序 → 检查清单 → 处置 → 事故报告 |
-| **migration-diff** | 12 | 差异扫描 → 等价改写 → 两层数据比对 → 就绪度报告 |
-| **data-semantics** | 13 | 口径结构化 → 结构化 diff → 逐层下钻 → 契约固化 |
-| **profile-hub** | 25 | 所有 MCP 的唯一数据落点 + 知识包导入导出 |
-
-合计 **93 个工具**。完整清单见 `DESIGN.md §3`。
-
----
-
-## 冷启动：为什么第一天就能给客户交付
-
-> 质疑：*"值守和根因报告依赖积累的档案，但那是客户现场的数据，我拿不到。
-> 除非客户先买前面的产品、养几个月档案，才能用上值守 —— 那我永远卖不出第一单。"*
-
-这个质疑成立，所以用 **Tier 分级契约**写死在代码里：
-
-| Tier | 输入 | 能产出 | 置信度 |
+| 仓库 | 类型 | 规模 | 干什么 |
 |---|---|---|---|
-| **Tier0** | 一句症状描述 / 一段慢日志 | 结论 + 检查清单 + 成因 + 处置 + 事故报告 | medium（静态知识） |
-| **Tier1** | 一次 `capture_snapshot` | 叠加真实元数据，假设收敛到 1~2 条 | high |
-| **Tier2** | ≥2 次观测、跨 ≥7 天 | 趋势、漂移、容量预测、异常检测 | high |
+| [`dbt-core`](dbt-core/) | 库 | 9 模块 | 协议信封 / 方言归一 / SQL 指纹 / 只读连库 / AST / 执行计划归一 |
+| [`dbt-store`](dbt-store/) | 库 | 1 模块 | 统一档案存储（SQLite，零依赖）—— 所有 MCP 的唯一数据落点 |
+| [`dbt-know`](dbt-know/) | 库 | 3 模块 | 引擎阈值 / 指标字典 / 18 种故障指纹（零依赖，Tier0 的来源） |
+| [`dbt-mcp-kit`](dbt-mcp-kit/) | 库 | 1 模块 | MCP 运行时外壳（SDK 1.x/2.x 兼容、异常转信封） |
+| [`mcp-sql-review`](mcp-sql-review/) | **MCP** | 14 工具 | SQL 静态体检 → 修法 → 验证 → 计划对比 → 索引建议 |
+| [`mcp-change-risk`](mcp-change-risk/) | **MCP** | 13 工具 | 变更风险因子模型 + 执行状态机（预检/干跑/灰度/回滚） |
+| [`mcp-dbwatch`](mcp-dbwatch/) | **MCP** | 15 工具 | DBA 值守：快照 → 定级 → 根因 → 健康分 → 事故报告 |
+| [`mcp-migration-diff`](mcp-migration-diff/) | **MCP** | 12 工具 | 国产化迁移：类型映射 → 语法 Gap → 校验方案 → 工作量 |
+| [`mcp-data-semantics`](mcp-data-semantics/) | **MCP** | 13 工具 | 数据口径治理：口径 diff → 扇出检测 → 下钻 → 契约固化 |
+| [`mcp-profile-hub`](mcp-profile-hub/) | **MCP** | 25 工具 | 档案中枢：实例档案 / 分位数基线 / 技术债账本 / 知识包 |
+| [`dbt-orchestrator`](dbt-orchestrator/) | 可选 | — | 跨 MCP 编排（按 `next_actions` 追链 + recipe）。**要装齐 6 个 MCP** |
 
-代码层面的三条硬约束：
+合计 **6 个 MCP / 92 个工具**，共享库 4 个。
 
-1. 每个返回必须带 `tier` 字段，**不允许默默降级**
-2. Tier0 下不伪造"趋势/环比"，缺失历史时返回 `tier_upgrade` 指引
-3. Tier0 的知识来自 `baselines.py` + `signature.py` —— **可增量维护的知识资产，不是硬编码默认值**
+## 按需安装：你只需要装你用的
 
-**销售路径因此变为**：今天就能交第一份报告 → 每次交付自动写档案 → 第二次起自然升 Tier2。
-**积累是使用的副产品，不是前置条件。**
-
-实证（零依赖，可立即复现）：
+| 你的场景 | 装这些 | 不会装上 |
+|---|---|---|
+| 只想在 CI 里卡 SQL 质量 | `mcp-sql-review` | 其余 5 个 MCP |
+| 只想查线上为什么慢 | `mcp-dbwatch` | 其余 5 个 MCP |
+| 只想评一条 DDL 能不能上 | `mcp-change-risk` | 其余 5 个 MCP |
+| 只在做 Oracle→PG 迁移 | `mcp-migration-diff` | 其余 5 个 MCP |
+| 只想解决「两个部门数字对不上」 | `mcp-data-semantics` | 其余 5 个 MCP |
+| 想要跨会话的档案与月报 | `mcp-profile-hub` | 其余 5 个 MCP |
+| 想一键跑「体检→修法→评估」整条链 | 6 个 MCP + `dbt-orchestrator` | — |
 
 ```bash
-python cli/dbt.py watch 主从延迟突增
-python cli/dbt.py watch --report 锁等待超时导致大量接口超时
+pip install ./mcp-sql-review              # 一个 MCP + 它需要的 3 个共享库
+pip install "./mcp-dbwatch[mysql]"        # 需要连 MySQL 时补驱动
 ```
 
-第二条解法：`profile-hub.export_profile / import_profile` 让"脱敏的行业常识包"成为交付物 ——
-新客户零历史时先导入同行业匿名基线作为 Tier1 起点。
+## 依赖图（实线 = 安装依赖，虚线 = 只在结果里声明下一步）
 
----
+```
+              ┌────────────┐   ┌────────────┐   ┌────────────┐
+              │ dbt-core   │   │ dbt-store  │   │ dbt-know   │
+              │ 协议/方言/AST│   │ 档案存储    │   │ 引擎知识    │
+              └─────┬──────┘   └─────┬──────┘   └─────┬──────┘
+                    │                │                │
+              ┌─────┴────────────────┴────────────────┴──────┐
+              │                dbt-mcp-kit                   │
+              └──┬────────┬────────┬────────┬────────┬───────┘
+                 │        │        │        │        │
+           sql-review  change-risk  dbwatch  migration  semantics  profile-hub
+                 ┆        ┆        ┆        ┆        ┆        ┆
+                 └────────┴────────┴────────┴────────┴────────┘
+                          next_actions（协议层，非 import）
+                                     │
+                            dbt-orchestrator（可选）
+```
 
-## 统一 IO 协议（跨 MCP 交互口）
+**硬约束**：任何 MCP 的源码里都不出现 `from sql_review import ...` 这类跨 MCP import。
+`scripts/check-boundaries.py` 会检查这条，CI 里跑。
 
-所有工具返回同一信封 `dbt.result/v1`，编排层可无差别解析：
+## 跨 MCP 怎么协作
+
+不是靠调用链硬编码，而是靠**结果里声明**：
 
 ```jsonc
-{
-  "ok": true, "schema": "dbt.result/v1",
-  "mcp": "sql-review", "tool": "review_sql",
-  "tier": "tier0", "verdict": "fail", "confidence": "medium",
-  "summary": "发现 3 个问题，最严重：critical",
-  "data": { ... },
-  "evidence": [{"kind": "ast", "source": "rule.JOIN002", "fact": "...", "supports": "..."}],
-  "next_actions": [{"mcp": "change-risk", "tool": "assess_change", "args": {...}}],
-  "tier_upgrade": {"to": "tier1", "need": "...", "how": "...", "gain": "..."},
-  "warnings": ["..."], "error": null
-}
+// mcp-sql-review.review_sql 的返回片段
+"next_actions": [
+  { "mcp": "sql-review",  "tool": "suggest_fixes", "args": {"sql": "..."}, "optional": false },
+  { "mcp": "change-risk", "tool": "assess_change", "args": {"sql": "..."}, "optional": true  }
+]
 ```
 
-三条硬约定：
+- 单个 MCP 独立使用时，`next_actions` 就是给人和上层 Agent 的建议
+- 装了 `dbt-orchestrator` 时，它照着这份声明自动追链
+- 每一步都透传 `correlation_id` / `instance_id`，事后可在 `dbt-store` 里串起来
 
-1. **单一落点** —— 除 `profile-hub` 外，任何 MCP 不得自建本地存储
-2. **关联三件套** —— `correlation_id` / `instance_id` / `sql_fingerprint` 全程透传
-3. **`next_actions` 即编排合同** —— 工具自己声明"下一步调谁"，编排层照着跑即可
-
----
-
-## 快速开始
-
-### 1. 挂到 MCP 客户端
-
-```jsonc
-// ~/.workbuddy/mcp.json
-{
-  "mcpServers": {
-    "sql-review": {
-      "command": "python",
-      "args": ["-m", "servers.sql_review"],
-      "cwd": "D:/work/luowenxing/db-ai-toolchain",
-      "env": { "PYTHONPATH": "packages;." }
-    },
-    "dbwatch":     { "command": "python", "args": ["-m", "servers.dbwatch"],     "cwd": "..." },
-    "change-risk": { "command": "python", "args": ["-m", "servers.change_risk"], "cwd": "..." },
-    "profile-hub": { "command": "python", "args": ["-m", "servers.profile_hub"], "cwd": "..." }
-  }
-}
-```
-
-### 2. CI 门禁
+## 快速开始（单 MCP）
 
 ```bash
-# 只体检本次改动引入的 SQL，有问题则 exit 1
-dbt review --diff --fail-on high
+pip install ./mcp-sql-review
+dbt-sql-review tools
+dbt-sql-review call review_sql --args '{"sql": "SELECT * FROM t WHERE 1=1", "dialect": "mysql"}'
 ```
 
-### 3. 连库做体检（只读账号即可）
+挂到 MCP 客户端：见各仓库 README 里的 `mcpServers` 片段。
+
+## 开发
 
 ```bash
-python cli/dbt.py watch --snapshot mysql://readonly:pwd@host:3306/db
-python cli/dbt.py review --file src/main/resources/mapper/OrderMapper.xml
+python scripts/dev-install.py            # 把 11 个仓以 editable 方式装进当前 venv
+python scripts/test-all.py               # 依次跑 11 个测试套件（合计 213 项）
+python scripts/test-all.py --only dbwatch
+python scripts/check-boundaries.py       # 检查跨 MCP import（应为 0）
 ```
 
-采集过程**只执行 SELECT**，任何写语句都会先被 `dbcore.guard` 拦截。
+不想装也能跑：每个测试文件自带兄弟目录探测，`python mcp-dbwatch/tests/test_dbwatch.py` 直接可运行。
 
----
+## 文档
 
-## 质量门槛
+| 文档 | 内容 |
+|---|---|
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 总体架构、Tier 冷启动契约、规则分册编码、版本策略 |
+| [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | **跨仓唯一契约**：`dbt.result/v1` 信封、枚举、错误码、关联三件套 |
+| [`docs/DATA_MODEL_AND_ALGORITHMS.md`](docs/DATA_MODEL_AND_ALGORITHMS.md) | 数据建模与算法设计（从需求倒推：四种判断本体、领域模型、算法取舍） |
 
-- `python tests/test_all.py` → **143 项通过**（含误报回归用例）
-- 新增规则必须同步：规则本体 + 误报说明 + 至少 2 个正反样例 + 修法
-- 禁止在没有 `evidence` 的情况下给出 `confidence: high`
-- 每个工具在异常输入下必须返回合法信封，不允许崩溃
+## 版本与发布
 
----
+四个共享库与 6 个 MCP 各自语义化版本，独立发版。
+MCP 对共享库的依赖写成 `>=0.x.0` 下限；共享库只做向后兼容的新增，破坏性改动升主版本并同步升各 MCP。
 
-## 路线图
+## 明确不做
 
-- [x] 内核 + 6 个 MCP + CLI + 179 项测试
-- [x] 编排层（`orchestrator/`）：按 `next_actions` 自动串起跨 MCP 链路（自动追链 + recipe 两种驱动）
-- [x] 规则分册（`rulebook/`）：按场景拆成 6 个分册 + 单一注册表，支持按方言/分类/严重度/显式名单启停（profile：default/lenient/ci-gate/bank-core）
-- [ ] 知识包市场：同行业匿名基线包
-- [ ] 报告模板（Word/PDF）与客户门户
+- 不做「一个 Agent 包打天下」—— 这是刻意拆成 6 个 MCP 的原因
+- 不自动执行修复：所有写操作必须过 `mcp-change-risk` 的状态机与审批
+- 不上时序数据库：SQLite 足够（10 实例 3 年的量级已核算）
+- 不做 ML 黑盒：所有判断要能让 DBA 对着报告吵架

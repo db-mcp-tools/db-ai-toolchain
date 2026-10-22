@@ -1,37 +1,34 @@
-SHELL := bash
+# db-ai-toolchain —— 顶层只做聚合，业务在各子仓
 PY ?= python
-PYPATH := packages;.
 
-.PHONY: help test test-fast lint install tools review clean
+.PHONY: help test boundaries install install-all check tree
 
 help:
-	@echo "make install     安装依赖"
-	@echo "make test        全量回归测试（不需要真实数据库）"
-	@echo "make tools       列出全部 MCP 与工具"
-	@echo "make review      演示：体检一条 SQL"
-	@echo "make tier0       演示：零历史也能出报告"
-	@echo "make clean       清理缓存"
-
-install:
-	$(PY) -m pip install -r requirements.txt
+	@echo "make test         跑全部 11 个测试套件"
+	@echo "make boundaries   检查跨 MCP 依赖（必须 0 违规）"
+	@echo "make check        边界检查 + 全量测试"
+	@echo "make install      安装 mcp-sql-review 及其共享库"
+	@echo "make install-all  安装全部 6 个 MCP + 编排器"
+	@echo "make tree         打印仓库结构与规模"
 
 test:
-	$(PY) tests/test_all.py
+	$(PY) scripts/test-all.py
 
-tools:
-	$(PY) cli/dbt.py tools
+boundaries:
+	$(PY) scripts/check-boundaries.py
 
-review:
-	$(PY) cli/dbt.py review "SELECT * FROM orders WHERE DATE(created_at)='2026-01-01' ORDER BY id LIMIT 10 OFFSET 50000"
+check: boundaries test
 
-tier0:
-	$(PY) cli/dbt.py watch 主从延迟突增
-	@echo
-	$(PY) cli/dbt.py watch --report 锁等待超时导致大量接口超时
+install:
+	$(PY) scripts/dev-install.py --with-deps
 
-lint:
-	$(PY) -m ruff check packages servers cli tests || true
+install-all:
+	$(PY) scripts/dev-install.py --all --with-deps
 
-clean:
-	find . -name "__pycache__" -type d -prune -exec rm -rf {} + 2>/dev/null || true
-	rm -rf .pytest_cache 2>/dev/null || true
+tree:
+	@for d in dbt-core dbt-store dbt-know dbt-mcp-kit mcp-sql-review mcp-change-risk \
+	          mcp-dbwatch mcp-migration-diff mcp-data-semantics mcp-profile-hub dbt-orchestrator; do \
+	  n=$$(cat $$d/src/*/*.py 2>/dev/null | wc -l); \
+	  t=$$(cat $$d/tests/*.py 2>/dev/null | wc -l); \
+	  printf "%-22s src %5s  tests %4s\n" "$$d" "$$n" "$$t"; \
+	done

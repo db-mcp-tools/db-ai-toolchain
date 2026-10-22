@@ -1,9 +1,0 @@
-# mcp / sqlglot 是内核必需；驱动按需安装（用什么连什么）
-mcp>=1.0
-sqlglot>=20.0
-
-# ---- 可选：连库驱动 ----
-pymysql>=1.1              # MySQL / MariaDB / OceanBase MySQL 模式
-# psycopg[binary]>=3.1    # PostgreSQL / GaussDB / Kingbase
-# oracledb>=1.4           # Oracle / 达梦（thin 模式免客户端）
-# clickhouse-connect>=0.7 # ClickHouse

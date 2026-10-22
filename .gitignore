@@ -1,22 +1,27 @@
+# 顶层是 meta 仓：只跟踪文档、脚本、集成测试
+# 每个子仓各自是独立 git 仓库
+dbt-core/
+dbt-store/
+dbt-know/
+dbt-mcp-kit/
+mcp-sql-review/
+mcp-change-risk/
+mcp-dbwatch/
+mcp-migration-diff/
+mcp-data-semantics/
+mcp-profile-hub/
+dbt-orchestrator/
+
 __pycache__/
 *.py[cod]
 *.egg-info/
+*.db
+*.db-journal
+*.db-wal
 .venv/
 venv/
-.env
-
-# 档案库与日志绝不入库（含客户信息）
-.dbtoolchain/
-store.db
-*.db
-logs/
-
-# 知识包可能含客户数据
-*.profile.json
-exports/
-
-.idea/
-.vscode/
+build/
+dist/
 .pytest_cache/
+.mypy_cache/
 .ruff_cache/
-.DS_Store
