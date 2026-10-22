@@ -113,5 +113,5 @@ change_state: draft | prechecked | dryrun | shadow | canary | applied | rolled_b
 
 1. 只允许**向后兼容**的变更：加字段、加枚举值、加错误码。
 2. 语义变更（改字段含义、改默认值）必须升主版本，并在 CHANGELOG 里写明迁移方式。
-3. 新增字段必须在 `dbt-core/protocol.py` 里定义 + 在本文件登记 + 至少一个测试断言。
+3. 新增字段必须在 `sqltk-core/protocol.py` 里定义 + 在本文件登记 + 至少一个测试断言。
 4. 各 MCP 的 `__version__` 必须 ≥ 它依赖的 `dbcore.PROTOCOL_VERSION` 的兼容下限。

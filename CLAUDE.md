@@ -2,17 +2,26 @@
 
 ## 结构
 
-10 个可独立安装的仓：3 个共享库（`dbt-core` / `dbt-store` / `dbt-know`）
+10 个可独立安装的仓：3 个共享库（`sqltk-core` / `sqltk-store` / `sqltk-know`）
 + 6 个 MCP（`mcp-*`）+ 1 个可选编排器。顶层只放文档、脚本、集成测试。
 
 ## 四条不可违反
 
 1. **MCP 之间不许互相 import**。需要别的能力时写进 `next_actions`，不写 `from xxx import`。
    改完跑 `python scripts/check-boundaries.py`，必须 0 违规。
-2. **共享库不许知道业务**。`dbt-core` / `dbt-store` / `dbt-know`
+2. **共享库不许知道业务**。`sqltk-core` / `sqltk-store` / `sqltk-know`
    里不许出现任何 MCP 的包名。
-3. **只有 `dbt-store` 能碰数据库文件**。除它之外任何仓不得自建存储、不得自己开 sqlite 连接。
+3. **只有 `sqltk-store` 能碰数据库文件**。除它之外任何仓不得自建存储、不得自己开 sqlite 连接。
 4. **每个工具必须返回 `dbcore.protocol.Result`**。禁止直接返回裸 dict。
+
+## 生成物不许手改
+
+各仓的 `pyproject.toml`、`LICENSE`、`src/<pkg>/py.typed`、`.github/workflows/ci.yml`
+都由 `scripts/gen-pyprojects.py` 从 `scripts/repo_config.py` 生成。
+
+- 改版本号 / 作者 / 许可 / URL / 依赖 → 改 `repo_config.py`，跑 `make gen`
+- 改完必须 `make check-meta`，CI 里这条是硬门禁
+- 直接手改 pyproject 会在下次生成时被覆盖，且 CI 会红
 
 ## Tier 契约
 
@@ -52,5 +61,5 @@
 
 ## 提交
 
-一个仓一个关注点。跨仓的接口变更（如协议加字段）按「先 `dbt-core` → 再 6 个 MCP」的顺序提交，
+一个仓一个关注点。跨仓的接口变更（如协议加字段）按「先 `sqltk-core` → 再 6 个 MCP」的顺序提交，
 每个仓各自 commit，message 里写明依赖的共享库版本下限。

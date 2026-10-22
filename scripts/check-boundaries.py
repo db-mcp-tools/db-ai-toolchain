@@ -5,7 +5,7 @@
 
 1. **跨 MCP import**：MCP 仓库的源码里不许出现 `from <另一个 MCP 包> import`
 2. **越界依赖声明**：pyproject 的 dependencies 里不许出现其他 `mcp-*`
-3. **共享库反向依赖**：dbt-core / dbt-store / dbt-know 不许 import 任何 MCP
+3. **共享库反向依赖**：sqltk-core / sqltk-store / sqltk-know 不许 import 任何 MCP
 
     python scripts/check-boundaries.py [--verbose]
 
@@ -29,9 +29,9 @@ MCP_REPOS = {
     "mcp-profile-hub": "profile_hub",
 }
 LIB_REPOS = {
-    "dbt-core": "dbcore",
-    "dbt-store": "dbstore",
-    "dbt-know": "dbknow",
+    "sqltk-core": "dbcore",
+    "sqltk-store": "dbstore",
+    "sqltk-know": "dbknow",
 }
 ALL_PKG = {**MCP_REPOS, **LIB_REPOS}
 
@@ -102,12 +102,12 @@ def main() -> int:
                 problems.append(f"[越界依赖] {repo}/pyproject.toml 声明了 {other}")
 
     # 4：orchestrator 必须依赖全部 MCP（它是唯一允许的例外，且必须显式声明）
-    orch = ROOT / "dbt-orchestrator/pyproject.toml"
+    orch = ROOT / "sqltk-orchestrator/pyproject.toml"
     if orch.exists():
         text = orch.read_text(encoding="utf-8")
         missing = [m for m in MCP_REPOS if f'"{m}' not in text]
         if missing:
-            problems.append(f"[编排器缺依赖] dbt-orchestrator 未声明：{missing}")
+            problems.append(f"[编排器缺依赖] sqltk-orchestrator 未声明：{missing}")
 
     print(f"检查了 {len(ALL_PKG)} 个仓的源码与依赖声明")
     if problems:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""把 11 个仓库以 editable 方式装进当前 Python 环境。
+"""把 10 个仓库以 editable 方式装进当前 Python 环境。
 
     python scripts/dev-install.py              # 只装共享库 + 你指定的 MCP
     python scripts/dev-install.py --all        # 全装
@@ -18,7 +18,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
-LIBS = ["dbt-core", "dbt-store", "dbt-know"]
+LIBS = ["sqltk-core", "sqltk-store", "sqltk-know"]
 MCPS = {
     "sql-review": "mcp-sql-review",
     "change-risk": "mcp-change-risk",
@@ -37,7 +37,11 @@ def install(repo: str) -> bool:
     cmd = [sys.executable, "-m", "pip", "install", "-e", str(path), "--no-deps", "-q"]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     ok = proc.returncode == 0
-    print(f"  {'✓' if ok else '✗'} {repo}" + ("" if ok else f"\n      {proc.stderr.strip().splitlines()[-1:]}"))
+    detail = ""
+    if not ok:
+        lines = proc.stderr.strip().splitlines()
+        detail = f"\n      {lines[-1] if lines else '（无错误输出）'}"
+    print(f"  {'✓' if ok else '✗'} {repo}{detail}")
     return ok
 
 
@@ -49,7 +53,7 @@ def main() -> int:
     args = ap.parse_args()
 
     if args.all:
-        picked = list(MCPS.values()) + ["dbt-orchestrator"]
+        picked = list(MCPS.values()) + ["sqltk-orchestrator"]
     elif args.only:
         picked = []
         for name in [x.strip() for x in args.only.split(",") if x.strip()]:
@@ -72,7 +76,7 @@ def main() -> int:
             return 1
 
     print("\n完成。常用命令：")
-    print("  dbt-sql-review tools | dbt-dbwatch tools | dbt run --seed ...")
+    print("  mcp-sql-review tools | mcp-dbwatch tools | sqltk run --seed ...")
     print("  自测：python scripts/test-all.py")
     return 0
 

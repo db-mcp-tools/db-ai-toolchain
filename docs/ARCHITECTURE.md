@@ -62,30 +62,62 @@ MCP 是「能力原子」。单独一个 MCP 不值钱，**能被编排层组合
 
 ```
 db-ai-toolchain/                 ← 本仓：文档 / 脚本 / 集成测试的容器（不含业务代码）
-├── dbt-core/                    共享库：协议 / 方言 / AST / 连库 / 计划归一 / MCP 运行时外壳
-├── dbt-store/                   共享库：统一档案存储（SQLite）
-├── dbt-know/                    共享库：引擎阈值 / 指标字典 / 故障指纹
+├── sqltk-core/                    共享库：协议 / 方言 / AST / 连库 / 计划归一 / MCP 运行时外壳
+├── sqltk-store/                   共享库：统一档案存储（SQLite）
+├── sqltk-know/                    共享库：引擎阈值 / 指标字典 / 故障指纹
 ├── mcp-sql-review/              MCP：SQL 体检与修法
 ├── mcp-change-risk/             MCP：变更风险与执行状态机
 ├── mcp-dbwatch/                 MCP：DBA 值守与根因
 ├── mcp-migration-diff/          MCP：国产化迁移差异
 ├── mcp-data-semantics/          MCP：数据口径治理
 ├── mcp-profile-hub/             MCP：档案中枢
-├── dbt-orchestrator/            可选：跨 MCP 编排（需要装齐 6 个 MCP）
-├── docs/                        跨仓文档（本文件 / PROTOCOL / 数据模型）
-├── scripts/                     批量测试 / 开发安装 / 边界检查
-└── tests/                       集成测试（全量信封一致性）
+├── sqltk-orchestrator/            可选：跨 MCP 编排（需要装齐 6 个 MCP）
+├── docs/                        跨仓文档（本文件 / PROTOCOL / 数据模型 / 发布手册）
+├── scripts/                     元数据生成 / 构建发布 / 批量测试 / 开发安装 / 边界检查
+├── tests/                       集成测试（全量信封一致性）
+├── CHANGELOG.md                 10 个包共享版本的变更记录
+└── .github/workflows/ci.yml     顶层 CI：拉齐 10 个子仓跑边界 + 元数据 + 全量测试
 ```
 
 每个仓的固定形态：
 
 ```
 <repo>/
-├── pyproject.toml      独立包名 / 版本 / 依赖 / console_scripts
-├── README.md           定位、安装、MCP 配置、工具表、边界声明
+├── pyproject.toml      发布元数据 —— 由 scripts/gen-pyprojects.py 生成，不要手改
+├── LICENSE             MIT —— 同上，生成
+├── README.md           定位、安装、MCP 配置、工具表、边界声明、许可
 ├── src/<pkg>/          源码（唯一的 import 根）
-└── tests/test_<pkg>.py 独立可跑的回归测试（不依赖 pytest）
+│   └── py.typed        类型标记（生成；缺了它下游拿不到任何类型提示）
+├── tests/test_<pkg>.py 独立可跑的回归测试（不依赖 pytest）
+└── .github/workflows/ci.yml   本仓 CI（3.x 全矩阵）—— 生成
 ```
+
+### 1.0 元数据的唯一来源
+
+10 个仓共享同一套发布元数据（版本号、作者、许可、URL、classifiers、Python 下限），
+手抄 10 份必然漂移。唯一来源是 `scripts/repo_config.py`：
+
+```bash
+make gen          # 生成 pyproject / LICENSE / py.typed / CI
+make check-meta   # 只校验（CI 用；不一致即失败）
+```
+
+依赖顺序也由它算出来（`install_order()` 拓扑排序），`scripts/publish.py` 照此顺序发布。
+发布流程见 [`docs/PUBLISHING.md`](PUBLISHING.md)。
+
+### 1.0.1 发行名 ≠ import 名
+
+| 仓目录 / 发行名 | import 包 | console script |
+|---|---|---|
+| `sqltk-core` | `dbcore` | — |
+| `sqltk-store` | `dbstore` | — |
+| `sqltk-know` | `dbknow` | — |
+| `mcp-sql-review` … `mcp-profile-hub` | `sql_review` / `change_risk` / `dbwatch` / `migration_diff` / `data_semantics` / `profile_hub` | 同发行名 |
+| `sqltk-orchestrator` | `dbt_orchestrator` | `sqltk` |
+
+`sqltk-` 而非 `dbt-` 是硬约束，不是为了好看：`dbt-core` 在 PyPI 上已被 dbt Labs 占用
+（1.12.6），同名的依赖约束会被解析到它的包；`dbt` 这个命令名也被它占用。
+细节见顶层 README 的「命名」小节。
 
 ### 1.1 拆分原则
 
@@ -95,7 +127,7 @@ db-ai-toolchain/                 ← 本仓：文档 / 脚本 / 集成测试的�
 
 1. **只有一个 MCP 用** → 放它自己的 `src/<pkg>/` 里（如 `rules/`、`risk.py`）
 2. **多个 MCP 用，且是纯技术能力（不含业务判断）** → 放共享库（如协议、方言、存储）
-3. **多个 MCP 用，且是行业知识** → 放 `dbt-know`（阈值、指标、指纹）
+3. **多个 MCP 用，且是行业知识** → 放 `sqltk-know`（阈值、指标、指纹）
 4. **它自己配得上一个仓吗？** → 骨架成本超过代码量时，并进它天然归属的库
 
 第 4 条是拆分最容易走过头的地方。一个仓的固定成本是 `pyproject + README + CLI + tests + git`
@@ -103,8 +135,8 @@ db-ai-toolchain/                 ← 本仓：文档 / 脚本 / 集成测试的�
 "每个 MCP 多一条依赖声明"和"发版时多一个版本要对齐"，换不来任何隔离收益。
 
 > 实例：`dbt-mcp-kit` 曾作为独立库存在（142 行代码 / 151 行骨架，其中 4 个函数零调用）。
-> 已合并进 `dbt-core.mcp_kit`，MCP SDK 改为延迟导入 + `dbt-core[mcp]` extra，
-> 顺带解除了它对 `dbt-store` 的硬依赖。判断依据不是"它小"，而是"它没有独立的使用场景"。
+> 已合并进 `sqltk-core.mcp_kit`，MCP SDK 改为延迟导入 + `sqltk-core[mcp]` extra，
+> 顺带解除了它对 `sqltk-store` 的硬依赖。判断依据不是"它小"，而是"它没有独立的使用场景"。
 
 ### 1.2 四条边界（`scripts/check-boundaries.py` 强制检查）
 
@@ -120,7 +152,7 @@ db-ai-toolchain/                 ← 本仓：文档 / 脚本 / 集成测试的�
 
 ### 1.3 为什么存储是库而不是 MCP
 
-`dbt-store` 做成库，任何 MCP 直接写同一个 SQLite。
+`sqltk-store` 做成库，任何 MCP 直接写同一个 SQLite。
 如果改成「通过 MCP 协议调用 profile-hub 写档案」，就等于**没装 hub 就丢数据**，
 与「按需安装」直接冲突。`mcp-profile-hub` 只是这份存储的查询/导出外壳。
 
@@ -149,7 +181,7 @@ db-ai-toolchain/                 ← 本仓：文档 / 脚本 / 集成测试的�
       → 变更护栏(change-risk) → 值守(dbwatch) → 根因(dbwatch)
       → 迁移验证(migration-diff) → 口径治理(data-semantics)
                     ↑
-              所有环节写档案 → dbt-store（唯一落点）→ profile-hub（查询/导出外壳）
+              所有环节写档案 → sqltk-store（唯一落点）→ profile-hub（查询/导出外壳）
 ```
 
 
@@ -192,16 +224,16 @@ db-ai-toolchain/                 ← 本仓：文档 / 脚本 / 集成测试的�
 ## 7. 版本与发布
 
 - **11 个仓各自语义化版本，独立发版**。共享库与 MCP 之间用 `>=0.x.0` 下限约束。
-- 共享库只做向后兼容的新增；破坏性改动升主版本，并按「dbt-core → 6 个 MCP」顺序同步升依赖下限。
+- 共享库只做向后兼容的新增；破坏性改动升主版本，并按「sqltk-core → 6 个 MCP」顺序同步升依赖下限。
 - 每个 MCP 有 `python -m <pkg>` 与 `dbt-<name>` 两个入口，互不依赖。
 
 ---
 
 ---
 
-## 8. 编排层 dbt-orchestrator（§4.3 的运行端，可选组件）
+## 8. 编排层 sqltk-orchestrator（§4.3 的运行端，可选组件）
 
-`next_actions` 是留给多 Agent 编排的合同，但合同需要运行端。`dbt-orchestrator/` 就是这份合同的执行引擎，
+`next_actions` 是留给多 Agent 编排的合同，但合同需要运行端。`sqltk-orchestrator/` 就是这份合同的执行引擎，
 **不为每一对 MCP 写胶水代码**。
 
 ### 8.1 两种驱动
@@ -220,18 +252,25 @@ db-ai-toolchain/                 ← 本仓：文档 / 脚本 / 集成测试的�
 - **护栏不下放**：受控变更类工具（dry_run / apply）是否真执行，由调用方显式决定（recipe 里写明 / `--follow-optional`）；
   引擎本身不替业务拍板「要不要真改库」。缺必填参数（如 `precheck_change_window` 的 `url`）给出干净的
   `E_ARGS` 失败，而不是 TypeError 堆栈。
-- **注册表单一事实来源**：`dbt-orchestrator/src/dbt_orchestrator/registry.py` 直接复用各 server 模块的 `TOOLS` 字典，
+- **注册表单一事实来源**：`sqltk-orchestrator/src/dbt_orchestrator/registry.py` 直接复用各 server 模块的 `TOOLS` 字典，
   保证编排层能调到的工具与 MCP 暴露的工具完全一致。
 
 ### 8.3 命令行
 
 ```bash
-dbt run --seed sql-review.review_sql --sql "SELECT * FROM t ORDER BY RAND() LIMIT 1000" --dialect mysql
-dbt run --seed sql-review.review_sql --sql "..." --follow-optional      # 连可选后续也追
-dbt run --recipe dbt-orchestrator/examples/safe_change.json                # 确定性流水线
-dbt run --seed ... --json                                              # 仅输出 trace JSON
-python -m orchestrator --seed ...                                      # 也可直接跑引擎
+sqltk tools                                      # 按 MCP 分组列出 91 个工具
+sqltk call sql-review.review_sql --args '{"sql": "SELECT 1", "dialect": "mysql"}'
+
+sqltk run --seed sql-review.review_sql \
+  --args '{"sql": "SELECT * FROM t ORDER BY RAND() LIMIT 1000", "dialect": "mysql"}'
+sqltk run --seed ... --follow-optional           # 连可选后续也追
+sqltk run --recipe sqltk-orchestrator/examples/safe_change.json   # 确定性流水线
+sqltk run --seed ... --json                      # 只输出 trace JSON
+python -m dbt_orchestrator ...                   # 等价写法，不依赖 console script
 ```
+
+退出码：`0` 通过或仅 warn / `1` 有步骤失败**或**最终判定 `fail` / `2` 用法错误。
+这样 `sqltk run` 能直接当 CI 门禁，不必再解析报告文本。
 
 ### 8.4 已知约定约束
 
@@ -239,7 +278,7 @@ python -m orchestrator --seed ...                                      # 也可�
   注册表会将其标记为歧义，强制消歧。
 - `next_actions` 的参数必须是自包含的（工具自己把 `sql`/`dialect` 等字面量带进 `args`），
   编排层不做跨步参数引用替换——保持"工具对自己产出的后续负责"的简单契约。
-- 单 MCP 独立发版时，用 git subtree split，保持 dilivery 粒度。
+- 各仓独立成 git 仓库（不是 subtree / submodule），发布粒度天然是单仓。
 
 ---
 

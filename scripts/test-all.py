@@ -19,17 +19,17 @@ import time
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 SUITES = [
-    ("dbt-core", "tests/test_dbcore.py"),
-    ("dbt-core", "tests/test_mcp_kit.py"),
-    ("dbt-store", "tests/test_dbstore.py"),
-    ("dbt-know", "tests/test_dbknow.py"),
+    ("sqltk-core", "tests/test_dbcore.py"),
+    ("sqltk-core", "tests/test_mcp_kit.py"),
+    ("sqltk-store", "tests/test_dbstore.py"),
+    ("sqltk-know", "tests/test_dbknow.py"),
     ("mcp-sql-review", "tests/test_sql_review.py"),
     ("mcp-change-risk", "tests/test_change_risk.py"),
     ("mcp-dbwatch", "tests/test_dbwatch.py"),
     ("mcp-migration-diff", "tests/test_migration_diff.py"),
     ("mcp-data-semantics", "tests/test_data_semantics.py"),
     ("mcp-profile-hub", "tests/test_profile_hub.py"),
-    ("dbt-orchestrator", "tests/test_dbt_orchestrator.py"),
+    ("sqltk-orchestrator", "tests/test_dbt_orchestrator.py"),
     ("(integration)", "tests/test_integration.py"),
 ]
 
@@ -62,7 +62,7 @@ def main() -> int:
     if args.only:
         suites = [s for s in suites if args.only in s[0]]
     if args.fast:
-        suites = [s for s in suites if s[0] != "dbt-orchestrator"]
+        suites = [s for s in suites if s[0] != "sqltk-orchestrator"]
     if not suites:
         print("没有匹配的套件", file=sys.stderr)
         return 2

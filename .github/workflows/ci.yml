@@ -1,0 +1,107 @@
+# 本文件由 scripts/gen-pyprojects.py 生成，不要手改。
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: py${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      # 子仓各自是独立仓库，逐个取回原位（scripts/ 与 tests/ 依赖这个布局）
+      - name: 取回 sqltk-core
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/sqltk-core
+          path: sqltk-core
+      - name: 取回 sqltk-store
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/sqltk-store
+          path: sqltk-store
+      - name: 取回 sqltk-know
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/sqltk-know
+          path: sqltk-know
+      - name: 取回 mcp-sql-review
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/mcp-sql-review
+          path: mcp-sql-review
+      - name: 取回 mcp-change-risk
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/mcp-change-risk
+          path: mcp-change-risk
+      - name: 取回 mcp-dbwatch
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/mcp-dbwatch
+          path: mcp-dbwatch
+      - name: 取回 mcp-migration-diff
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/mcp-migration-diff
+          path: mcp-migration-diff
+      - name: 取回 mcp-data-semantics
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/mcp-data-semantics
+          path: mcp-data-semantics
+      - name: 取回 mcp-profile-hub
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/mcp-profile-hub
+          path: mcp-profile-hub
+      - name: 取回 sqltk-orchestrator
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/sqltk-orchestrator
+          path: sqltk-orchestrator
+
+      - name: 安装（按依赖拓扑序）
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e sqltk-core
+          pip install -e sqltk-store
+          pip install -e sqltk-know
+          pip install -e mcp-sql-review
+          pip install -e mcp-change-risk
+          pip install -e mcp-dbwatch
+          pip install -e mcp-migration-diff
+          pip install -e mcp-data-semantics
+          pip install -e mcp-profile-hub
+          pip install -e sqltk-orchestrator
+          pip install ruff
+
+      - name: 元数据未漂移（pyproject / LICENSE / py.typed / CI）
+        run: python scripts/gen-pyprojects.py --check
+
+      - name: 依赖边界（MCP 不许互 import，库不许依赖 MCP）
+        run: python scripts/check-boundaries.py
+
+      - name: 静态检查
+        run: ruff check --select F,E9 .
+
+      - name: 全部测试
+        run: python scripts/test-all.py

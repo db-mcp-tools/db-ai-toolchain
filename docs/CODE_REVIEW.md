@@ -1,10 +1,10 @@
 # 代码审查报告
 
 审查日期：2026-10-22
-审查对象：`db-ai-toolchain` 11 仓（dbt-core / dbt-store / dbt-know / dbt-mcp-kit / 6 个 MCP / dbt-orchestrator）
+审查对象：`db-ai-toolchain` 11 仓（sqltk-core / sqltk-store / sqltk-know / dbt-mcp-kit / 6 个 MCP / sqltk-orchestrator）
 代码规模：16,787 行 Python，92 个工具，12 个测试套件
 
-> 审查后按架构评审结论合并了 `dbt-mcp-kit` → `dbt-core.mcp_kit`，现为 **10 仓**。
+> 审查后按架构评审结论合并了 `dbt-mcp-kit` → `sqltk-core.mcp_kit`，现为 **10 仓**。
 > 合并理由见第八节末尾与 `ARCHITECTURE.md` §1.1 第 4 条。
 
 ---
@@ -82,7 +82,7 @@ is_ddl = any(s.strip().lower().startswith(("alter ", "create ", "drop ", "trunca
 
 **影响**：声称"验证过了、没留痕迹"，实际表结构已改。这是最坏的一类 bug——它让用户对 dry-run 建立错误的信任。
 
-**根因不只在调用方**。`dbt-core/src/dbcore/connectors.py:242` 的 `run_in_transaction` 是共享库函数，任何 MCP 都能 import，**它自己完全不做语句类型校验**，只信调用方传进来的 `commit` 标志。
+**根因不只在调用方**。`sqltk-core/src/dbcore/connectors.py:242` 的 `run_in_transaction` 是共享库函数，任何 MCP 都能 import，**它自己完全不做语句类型校验**，只信调用方传进来的 `commit` 标志。
 
 **修法（两层，缺一不可）**：
 
@@ -195,7 +195,7 @@ def next(self, mcp, tool, **kw):
 
 ### P1-1 `_conn()` 每次调用跑 19 条 DDL，且连接从不关闭
 
-`dbt-store/src/dbstore/store.py:200`
+`sqltk-store/src/dbstore/store.py:200`
 
 ```python
 def _conn() -> sqlite3.Connection:
@@ -308,13 +308,13 @@ save_change(plan.instance_id, {
 
 | # | 位置 | 问题 |
 |---|---|---|
-| P2-1 | 7 个 `*/cli.py` | 除描述字符串外**完全相同**（83 行 × 7 = 581 行）。应下沉到 `dbt-core.mcp_kit`，各仓两行调用 |
+| P2-1 | 7 个 `*/cli.py` | 除描述字符串外**完全相同**（83 行 × 7 = 581 行）。应下沉到 `sqltk-core.mcp_kit`，各仓两行调用 |
 | P2-2 | `docs/ARCHITECTURE.md:55` | 写 "~80 个工具"，实际 **92**（各仓 README 的工具表 100% 准确，只有总纲漂移） |
 | P2-3 | `mcp-sql-review/src/sql_review/rules.py:3` | docstring 说"实现已迁移到 `dbcore/rulebook/`"，实际是 `sql_review/rulebook/` |
-| P2-4 | `dbt-core/src/dbcore/protocol.py:163` | 死代码：`d.pop("took_ms", None) or None` 后立刻 `d["took_ms"] = self.took_ms` |
-| P2-5 | `dbt-core/src/dbcore/guard.py:52` | 死分支：`isinstance(node, exp.Select)` 永不为真（`Select` 不在上面的 forbidden 元组里） |
+| P2-4 | `sqltk-core/src/dbcore/protocol.py:163` | 死代码：`d.pop("took_ms", None) or None` 后立刻 `d["took_ms"] = self.took_ms` |
+| P2-5 | `sqltk-core/src/dbcore/guard.py:52` | 死分支：`isinstance(node, exp.Select)` 永不为真（`Select` 不在上面的 forbidden 元组里） |
 | P2-6 | `dbt-mcp-kit/src/dbmcp/__init__.py:74` | 非 Result 分支硬编码 `"took_ms": 0`，但 `t0` 已经算了；同一处 `except Exception` 用 `E_QUERY`，而 `fail()` 把一切非 ToolError 归为 `E_ARGS` —— 同类异常两种码 |
-| P2-7 | `dbt-core/src/dbcore/connectors.py:19` | `_URL_RE` 不 decode percent-encoding；密码含 `@`/`/` 直接解析失败。`redact_dsn` 的正则同样在密码含 `@` 时残留 `mysql://root:***@ss@host` |
+| P2-7 | `sqltk-core/src/dbcore/connectors.py:19` | `_URL_RE` 不 decode percent-encoding；密码含 `@`/`/` 直接解析失败。`redact_dsn` 的正则同样在密码含 `@` 时残留 `mysql://root:***@ss@host` |
 | P2-8 | `mcp-change-risk/src/change_risk/server.py:254` | `_tables_of` 正则 `\bTABLE\s+(\w+)` 对 `CREATE TABLE IF NOT EXISTS t` 会捕获到 `IF` |
 | P2-9 | `execution.py:184` | `rb_possible` 靠中文关键词（"不可逆"/"无法"…）判可回滚性。应改为 `rollback` dict 里的显式布尔字段 |
 | P2-10 | `scripts/dev-install.py:38`、`scripts/test-all.py:42` | `subprocess.run` 未显式传 `check=`（ruff PLW1510） |
@@ -399,7 +399,7 @@ save_change(plan.instance_id, {
   ✗ 不误报 JOIN002  << WITH a AS (SELECT 1 AS i), b AS (SELECT  -> {'JOIN002', 'SEL001'}
 ```
 
-### 架构调整：`dbt-mcp-kit` 并入 `dbt-core`（同日晚于修复完成）
+### 架构调整：`dbt-mcp-kit` 并入 `sqltk-core`（同日晚于修复完成）
 
 审查后做的仓库粒度复核，结论是 11 仓里有 1 个越界：
 
@@ -408,19 +408,19 @@ save_change(plan.instance_id, {
 | 源码 / 骨架 | 142 行代码 vs 151 行骨架（pyproject 23 + README 23 + tests 105） |
 | 死代码 | `store_root` / `instance_id_of` / `tool_names` / `register_all` **四个函数零调用** |
 | 独立场景 | 无。它只是 `dbcore.protocol` 的 MCP 适配层，且已 `from dbcore import logging_setup` |
-| 隐性成本 | pyproject 硬依赖 `dbt-store` —— **每个 MCP 都被间接绑上 store**，与"按需安装"相悖 |
+| 隐性成本 | pyproject 硬依赖 `sqltk-store` —— **每个 MCP 都被间接绑上 store**，与"按需安装"相悖 |
 
 处理：
 
 - 三个在用的函数（`make_server` / `wrap` / `register`）移入 `dbcore/mcp_kit.py`，死代码删除。
-- `import mcp` 改为**函数内延迟导入**，依赖声明挪到 `dbt-core[mcp]` extra ——
+- `import mcp` 改为**函数内延迟导入**，依赖声明挪到 `sqltk-core[mcp]` extra ——
   纯库调用方（如只要 SQL 解析/连库）不必装 MCP SDK。
-- 各 MCP 依赖从 `dbt-core + dbt-store + dbt-mcp-kit` 收敛为 `dbt-core[mcp] + dbt-store`。
+- 各 MCP 依赖从 `sqltk-core + sqltk-store + dbt-mcp-kit` 收敛为 `sqltk-core[mcp] + sqltk-store`。
 - **P2-6 顺带修掉**：非 Result 分支的 `took_ms` 改用真实耗时；
   `fail()` 新增 `code` 参数并对非 ToolError 补 `detail.type`，
   MCP 外壳兜底统一走 `E_QUERY`（原来同一类异常会出现 `E_ARGS` / `E_QUERY` 两码，
   会让"代码崩了"看起来像"用户传错参数"）。
-- kit 套件 12 项 → 并入 `dbt-core/tests/test_mcp_kit.py`，新增"兜底码必须是 E_QUERY"断言，共 14 项。
+- kit 套件 12 项 → 并入 `sqltk-core/tests/test_mcp_kit.py`，新增"兜底码必须是 E_QUERY"断言，共 14 项。
 
 判断标准已写进 `ARCHITECTURE.md` §1.1 第 4 条：**骨架行数 ≥ 源码行数时，不单独成仓**。
 这是防止以后继续拆出同类空壳包的硬门槛。

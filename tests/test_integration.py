@@ -15,10 +15,10 @@ import tempfile
 
 _HERE = pathlib.Path(__file__).resolve().parent
 _BASE = _HERE.parent                      # 本仓根
-if not (_BASE / "dbt-core").is_dir() and (_BASE.parent / "dbt-core").is_dir():
+if not (_BASE / "sqltk-core").is_dir() and (_BASE.parent / "sqltk-core").is_dir():
     _BASE = _BASE.parent                  # 顶层集成测试：仓库在旁侧
 # 开发期：兄弟仓库用源码目录；正式使用请 pip install（见 README）
-for _sib in ("dbt-core", "dbt-store", "dbt-know", "mcp-sql-review", "mcp-change-risk", "mcp-dbwatch", "mcp-migration-diff", "mcp-data-semantics", "mcp-profile-hub"):
+for _sib in ("sqltk-core", "sqltk-store", "sqltk-know", "mcp-sql-review", "mcp-change-risk", "mcp-dbwatch", "mcp-migration-diff", "mcp-data-semantics", "mcp-profile-hub"):
     _p = _BASE / _sib / "src"
     if _p.is_dir() and str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
