@@ -1,18 +1,22 @@
 # db-ai-toolchain —— 顶层只做聚合，业务在各子仓
+#
+# 这里只是 scripts/*.py 的快捷方式。Windows 上没有 make 就直接跑脚本，
+# 每个 target 对应的命令都写在下面，一一对应。
 PY ?= python
 # 留空 = 用当前环境自己的 pip 源（pip.conf / 全局配置）。
 # 需要临时换源：make build INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
 INDEX ?=
 INDEX_ARG = $(if $(INDEX),--index-url $(INDEX))
 
-.PHONY: help test boundaries check gen check-meta build publish-test publish \
+.PHONY: help test smoke boundaries check gen check-meta build verify publish-test publish \
         install install-all tree
 
 help:
 	@echo "开发"
-	@echo "  make test          跑全部 12 个测试套件"
+	@echo "  make test          跑全部 12 个测试套件（逐套件报用例数）"
+	@echo "  make smoke         用真实 MCP 客户端挂载 6 个 server（需 mcp SDK）"
 	@echo "  make boundaries    检查跨 MCP 依赖（必须 0 违规）"
-	@echo "  make check         边界检查 + 全量测试"
+	@echo "  make check         边界检查 + 全量测试 + 挂载冒烟"
 	@echo "  make install       安装 mcp-sql-review 及其共享库"
 	@echo "  make install-all   安装全部 6 个 MCP + 编排器"
 	@echo "  make tree          打印仓库结构与规模"
@@ -21,16 +25,20 @@ help:
 	@echo "  make check-meta    只校验元数据是否漂移（CI 用，不改文件）"
 	@echo "  make build         按依赖拓扑序构建 10 个 wheel 并过 twine check"
 	@echo "                     （换源：make build INDEX=https://pypi.tuna.tsinghua.edu.cn/simple）"
+	@echo "  make verify        把 wheel 装进干净 venv 验证（按需安装 + 整图 + 挂载冒烟）"
 	@echo "  make publish-test  上传 TestPyPI（预演，见 docs/PUBLISHING.md）"
 	@echo "  make publish       上传 PyPI"
 
 test:
 	$(PY) scripts/test-all.py
 
+smoke:
+	$(PY) scripts/smoke-mcp.py
+
 boundaries:
 	$(PY) scripts/check-boundaries.py
 
-check: boundaries test
+check: boundaries test smoke
 
 gen:
 	$(PY) scripts/gen-pyprojects.py
@@ -40,6 +48,9 @@ check-meta:
 
 build:
 	$(PY) scripts/publish.py --check $(INDEX_ARG)
+
+verify:
+	$(PY) scripts/verify-wheels.py $(INDEX_ARG)
 
 publish-test:
 	$(PY) scripts/publish.py --upload testpypi $(INDEX_ARG)

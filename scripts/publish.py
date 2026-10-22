@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -43,7 +44,52 @@ def run(cmd: list[str], cwd: pathlib.Path, env: dict | None = None) -> subproces
     e = dict(os.environ)
     if env:
         e.update(env)
-    return subprocess.run(cmd, cwd=str(cwd), env=e, capture_output=True, text=True)
+    # stdin 必须掐断：twine 在缺凭据时会交互式提问，capture_output 下会静默挂住，
+    # 看上去像「卡住不动」，实际是在等一个永远不会来的输入。
+    return subprocess.run(cmd, cwd=str(cwd), env=e, capture_output=True, text=True,
+                          stdin=subprocess.DEVNULL)
+
+
+def check_tooling() -> list[str]:
+    """构建工具是否装了。
+
+    不查这里的后果是 10 个包各报一次「No module named build」，
+    真正的原因淹没在重复噪音里。
+    """
+    import importlib.util
+
+    problems = []
+    for mod in ("build", "twine"):
+        if importlib.util.find_spec(mod) is None:
+            problems.append(f"缺 {mod}：pip install build twine")
+    return problems
+
+
+def pypirc_path() -> pathlib.Path:
+    return pathlib.Path.home() / ".pypirc"
+
+
+def check_credentials(index: str) -> list[str]:
+    """上传前确认凭据存在。
+
+    twine 缺凭据时是**交互式提示**而不是报错 —— 在脚本 / CI 里表现为永久挂起。
+    宁可在这里提前退出。
+    """
+    if os.environ.get("TWINE_PASSWORD") and os.environ.get("TWINE_USERNAME"):
+        return []
+    rc = pypirc_path()
+    if rc.exists():
+        text = rc.read_text(encoding="utf-8", errors="replace")
+        # 只做粗判断：有对应 [section] 且该段里有 password。解析细节交给 twine。
+        m = re.search(rf"^\[{re.escape(index)}\](.*?)(?=^\[|\Z)", text, re.M | re.S)
+        if m and "password" in m.group(1):
+            return []
+    return [
+        f"没有 {index} 的上传凭据，twine 会转去交互式提问（脚本里会挂住）。\n"
+        f"        export TWINE_USERNAME=__token__\n"
+        f"        export TWINE_PASSWORD=pypi-xxxx\n"
+        f"        或写 ~/.pypirc（当前路径：{rc}）"
+    ]
 
 
 def pypi_name_taken(name: str) -> bool | None:
@@ -88,8 +134,6 @@ def check_versions() -> list[str]:
     漏改一处不会让任何测试失败，但装出来的包会自称另一个版本 ——
     报 bug 时对不上号。
     """
-    import re
-
     problems = []
     for repo in C.REPOS:
         init = ROOT / repo["dir"] / "src" / repo["pkg"] / "__init__.py"
@@ -187,7 +231,9 @@ def main() -> int:
     args = ap.parse_args()
 
     # ---- 预检
-    problems = preflight()
+    problems = preflight() + check_tooling()
+    if args.upload:
+        problems += check_credentials(args.upload)
     if problems:
         print("✗ 预检未通过：")
         for p in problems:

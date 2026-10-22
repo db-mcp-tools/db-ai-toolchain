@@ -22,7 +22,7 @@
   "schema": "dbt.result/v1",
   "mcp": "sql-review",
   "tool": "review_sql",
-  "version": "0.1.0",
+  "version": "0.1.0",                // 信封协议版本（dbcore.PROTOCOL_VERSION），**不是**包的版本号
   "ts": 1761...,
   "correlation_id": "01J...",        // 贯穿一次跨 MCP 调用链
   "instance_id": "sha256:ab12...",   // 由 DSN/主机指纹派生，不含密码

@@ -36,12 +36,13 @@
 
 - [ ] 新目录 `<mcp-name>/`，含 `src/<pkg>/`、`tests/`、`pyproject.toml`、`README.md`
 - [ ] `pyproject.toml` 只依赖共享库，**不依赖其他 `mcp-*`**
-- [ ] 声明唯一的 console_script（`dbt-<name>`）与 `python -m <pkg>` 入口
+- [ ] 声明唯一的 console_script（`mcp-<name>`，与发行名一致）与 `python -m <pkg>` 入口
 - [ ] 所有工具注册进 `TOOLS` 字典（README 的工具表由它生成）
 - [ ] README 写清：定位、装什么、MCP 配置片段、工具表、**边界（不做什么）**
 - [ ] 更新顶层 `README.md` 的仓库清单与按需安装矩阵
 - [ ] 更新 `docs/ARCHITECTURE.md §3` 的 MCP 索引表
-- [ ] 跑 `scripts/check-boundaries.py` 与 `scripts/test-all.py`
+- [ ] 跑 `scripts/check-boundaries.py`、`scripts/test-all.py`，
+      并在 `scripts/smoke-mcp.py` 的 SERVERS 表里登记（名字 / 工具数 / 探针工具）
 
 ## 加工具的检查清单
 
@@ -50,6 +51,7 @@
 - [ ] 至少一条 `add_evidence`（没有依据的结论不许 `confidence: high`）
 - [ ] 声明 `next_actions`（下一步该调谁；跨 MCP 也照写，编排层会照此执行）
 - [ ] 在所属仓的 `tests/test_*.py` 加一条信封一致性断言
+- [ ] docstring 非空 —— 它就是 `tools/list` 里的 description，模型据此决定要不要调用
 - [ ] 更新 `TOOLS` 后重新生成 README 工具表
 
 ## 命名

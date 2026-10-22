@@ -105,3 +105,8 @@ jobs:
 
       - name: 全部测试
         run: python scripts/test-all.py
+
+      # 单测直接 import 函数来调，证明不了「协议层挂得上」。
+      # 这一步用真实 stdio 客户端把 6 个 server 各挂一次。
+      - name: MCP 挂载冒烟
+        run: python scripts/smoke-mcp.py

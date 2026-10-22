@@ -12,9 +12,14 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import re
 import subprocess
 import sys
 import time
+
+# 各套件末尾会打印「通过 N 项，失败 M 项」。总数由这里加出来，
+# 不再靠人肉统计 —— 之前 CHANGELOG 里写错过一次（271 / 286 / 289 三个数都出现过）。
+CASE_RE = re.compile(r"通过\s*(\d+)\s*项")
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -34,10 +39,10 @@ SUITES = [
 ]
 
 
-def run_one(repo: str, rel: str) -> tuple[bool, str, float]:
+def run_one(repo: str, rel: str) -> tuple[bool, str, int, float]:
     path = ROOT / repo / rel if repo != "(integration)" else ROOT / rel
     if not path.exists():
-        return False, f"找不到 {path}", 0.0
+        return False, f"找不到 {path}", 0, 0.0
     t0 = time.time()
     proc = subprocess.run([sys.executable, str(path)], capture_output=True, text=True,
                           cwd=str(path.parent.parent), encoding="utf-8", errors="replace")
@@ -49,7 +54,9 @@ def run_one(repo: str, rel: str) -> tuple[bool, str, float]:
         if "通过" in ln or "失败" in ln or "Error" in ln or "Traceback" in ln:
             summary = ln.strip()
             break
-    return proc.returncode == 0, summary or (tail[-1] if tail else ""), took
+    counts = CASE_RE.findall(out)
+    cases = int(counts[-1]) if counts else 0
+    return proc.returncode == 0, summary or (tail[-1] if tail else ""), cases, took
 
 
 def main() -> int:
@@ -70,11 +77,13 @@ def main() -> int:
     print(f"运行 {len(suites)} 个测试套件（Python {sys.version.split()[0]}）\n")
     bad: list[str] = []
     total_took = 0.0
+    total_cases = 0
     for repo, rel in suites:
-        ok, summary, took = run_one(repo, rel)
+        ok, summary, cases, took = run_one(repo, rel)
         total_took += took
+        total_cases += cases
         mark = "✓" if ok else "✗"
-        print(f"  {mark} {repo:22s} {took:5.1f}s  {summary}")
+        print(f"  {mark} {repo:22s} {rel:32s} {cases:4d} 项 {took:5.1f}s  {summary}")
         if not ok:
             bad.append(repo)
 
@@ -83,7 +92,7 @@ def main() -> int:
         print(f"失败 {len(bad)} 个：{', '.join(bad)}")
         print("单独复现：python " + " ".join(f"{b}/tests/test_*.py" if b != "(integration)" else "tests/test_integration.py" for b in bad))
         return 1
-    print(f"全部通过（{len(suites)} 套件，{total_took:.1f}s）")
+    print(f"全部通过（{len(suites)} 套件 / {total_cases} 项，{total_took:.1f}s）")
     return 0
 
 

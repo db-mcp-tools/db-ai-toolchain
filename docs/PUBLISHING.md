@@ -55,7 +55,7 @@ python scripts/publish.py --check --index-url https://pypi.org/simple
 
 ```bash
 make check-meta     # 元数据是否漂移（10 个 pyproject / LICENSE / py.typed / CI）
-make check          # 边界检查 + 全部测试
+make check          # 边界检查 + 全部测试 + 6 个 MCP 的挂载冒烟
 ```
 
 `check-meta` 失败说明有人手改了生成的产物。修法不是改回去，而是：
@@ -64,6 +64,19 @@ make check          # 边界检查 + 全部测试
 # 改 scripts/repo_config.py，然后
 make gen
 ```
+
+### 脚本自带的三道预检
+
+`publish.py` 在任何一次运行开头都会查完这些才动手，避免"发到第 7 个包才失败"：
+
+| 检查 | 触发时机 | 为什么必须提前 |
+|---|---|---|
+| 版本一致（11 处 `__version__`） | 总是 | 漏改一处不会让任何测试失败，但装出来的包会自称另一个版本 |
+| `build` / `twine` 已安装 | 总是 | 否则 10 个包各报一次 `No module named build`，真因淹没在噪音里 |
+| 上传凭据存在 | 仅 `--upload` | twine 缺凭据时是**交互式提问**而非报错，在脚本里表现为永久挂起 |
+
+凭据判断只看两处：`TWINE_USERNAME` + `TWINE_PASSWORD` 环境变量，或 `~/.pypirc` 里对应
+`[pypi]` / `[testpypi]` 段中是否有 `password`。宁可在这里提前退出，也不要让进程挂在那儿。
 
 ### 包名占用（已自动化，但值得知道为什么）
 
@@ -104,21 +117,39 @@ python scripts/publish.py --check --only mcp-sql-review
 ## 3. 从 wheel 装一遍（最有价值的一步）
 
 `twine check` 只校验元数据格式，**不校验依赖声明是否完整**。真正的检验是从构建产物装到一个
-干净的 venv 里，跑起来。
+干净的 venv 里，跑起来。这条已经脚本化：
+
+```bash
+make verify          # = python scripts/verify-wheels.py
+```
+
+它开两个干净 venv 各做一件事：
+
+| 场景 | 装什么 | 断言 |
+|---|---|---|
+| A 按需安装 | 只有 `mcp-sql-review` | 自动带上 `sqltk-core` + `sqltk-store`，且 **`dbknow` 没被拖进来**；`pip check` 干净；`python -m sql_review tools` 能跑 |
+| B 整图 | `sqltk-orchestrator` | 6 个 MCP 全部到位；`pip check` 干净；`smoke-mcp.py --installed` 6 个 server 全部挂得上；编排器 CLI 起得来 |
+
+`--keep` 保留 venv 便于手工进去看，`--only-a` 只跑快的那个。
+
+手工排查时等价的命令（场景 A）：
 
 ```bash
 python -m venv /tmp/vfy
 V=/tmp/vfy/Scripts/pip        # Linux/macOS 用 /tmp/vfy/bin/pip
 PYV=/tmp/vfy/Scripts/python
 
-# 用本地 wheel 当唯一源，强制 pip 从产物解析依赖（连不上 PyPI 也能跑）
+# 用本地 wheel 当唯一源，强制 pip 从产物解析依赖
 $V install --no-index \
-  --find-links sqltk-core/dist --find-links sqltk-store/dist --find-links sqltk-know/dist \
+  --find-links sqltk-core/dist --find-links sqltk-store/dist \
   --find-links mcp-sql-review/dist \
   mcp-sql-review
 
 $PYV -c "import sql_review, dbcore, dbstore; print('导入 OK')"
 $PYV -m sql_review tools | head -5
+
+# 用**装好的包**做一次协议层挂载冒烟（--installed 不注入源码路径）
+$PYV scripts/smoke-mcp.py --installed --only sql-review
 ```
 
 这一步能抓到的东西，前面几步都抓不到：
@@ -224,6 +255,7 @@ make check   # 确认测试仍全过
 | `403 Invalid or non-existent authentication` | 拿 PyPI token 传了 TestPyPI | 两套 token 不通用 |
 | 装上了但 import 报 `ModuleNotFoundError` | 包目录没被 `packages.find` 找到 | 检查 `where = ["src"]` 与目录名 |
 | 3.9 上装 MCP 报无可用版本 | `requires-python` 正确拦截 | 预期行为，MCP 需要 3.10+ |
+| `publish.py` 跑到一半不动了，没有任何输出 | 缺凭据，twine 在等交互式输入 | 新版本已提前拦截；旧版本检查 `TWINE_PASSWORD` 是否在当前 shell 里 |
 
 ---
 

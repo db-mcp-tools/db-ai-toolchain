@@ -50,6 +50,16 @@
   表名提取的正则会把 `CREATE TABLE IF NOT EXISTS orders` 抓成 `IF`。改用 AST 提取。
 - `fail()` 补 `code` 参数与 `detail.type`：原来同一类异常会同时出现 `E_ARGS` 和 `E_QUERY`，
   让"代码崩了"看起来像"用户传错了参数"。
+- **旧档案库一升级就全挂**：索引 DDL 排在补列之前，`observations` 缺 `metric` 列时
+  `CREATE INDEX ... (metric)` 抛 `no such column: metric`，而这段 DDL 每次 `_conn()` 都跑 ——
+  于是所有读写档案的工具统一报 `E_QUERY`。装了旧版、`~/.dbtoolchain/store.db` 已存在的用户，
+  升级后**没有一个工具能用**。改为建表 → 补列 → 建索引，且建索引失败只丢索引不丢功能。
+- **6 个 MCP 的 `tools` / `call` 子命令根本不存在**：README 一直写着
+  「命令行调试（不挂客户端也能用）：`mcp-sql-review tools`」，但入口只有一句
+  `mcp.run()`，argv 被完全忽略 —— 敲 `tools` 实际是起了一个等 stdin 的 server，
+  终端表现就是卡死。现由 `dbcore.mcp_kit.cli()` 提供：无参数起 server、
+  `tools [--json]` 列表、`call <tool> --args '<json>'` 本地调一次并打印信封，
+  退出码 0/1/2 与编排器一致。12 条回归用例钉住这套契约。
 - **编排器 CLI 有三个缺陷**（从装好的 wheel 实跑才发现）：
   `sqltk tools` 直接崩溃（照抄 MCP 模板，去 import 编排器里不存在的 `TOOLS`）；
   README 与架构文档主打的 `sqltk run --seed/--recipe` **从未实现**；
@@ -82,11 +92,27 @@
   6 个 MCP 与编排器 3.10+（`mcp` SDK 自身的下限，3.9 上装不上）。
 - `scripts/publish.py` 按依赖拓扑序构建 / 上传，`twine check` 全过；
   `docs/PUBLISHING.md` 记录流程与坑。
-- 测试：12 个套件 / 271 项，`make check` 一条命令跑完。全部不依赖 pytest 与真实数据库。
+- 测试：12 个套件 / 304 项，`make check` 一条命令跑完，并逐套件报出用例数
+  （总数由 `scripts/test-all.py` 从各套件输出加总，不再手抄）。全部不依赖 pytest 与真实数据库。
+- **MCP 挂载冒烟** `scripts/smoke-mcp.py`：用真实 stdio 客户端把 6 个 server 各连一次，
+  校验握手、工具数、每个工具的 `description` / `inputSchema`，并真调一个工具确认返回是
+  `dbt.result/v1` 信封。单测是直接 import 函数，证明不了协议层挂得上 —— 上面那条旧库缺陷
+  就是它第一次跑就抓到的。已进 `make check` 与 CI。
+- **`scripts/verify-wheels.py`（`make verify`）**：把构建产物装进两个干净 venv 验证 ——
+  A 只装 `mcp-sql-review`，断言 `dbknow` 没被拖进来（"按需安装"的唯一硬证明）；
+  B 装 `sqltk-orchestrator`，断言 6 个 MCP 全到位、`pip check` 干净、挂载冒烟通过、
+  编排器 CLI 起得来。原来这套流程只写在 `docs/PUBLISHING.md` 里靠人手敲。
+- `publish.py` 补两道预检：`build`/`twine` 是否安装（否则 10 个包各报一次同样的错）、
+  上传凭据是否存在（twine 缺凭据是交互式提问，脚本里表现为永久挂起）。
+- `sqltk-store` 的建表 / 补列 / 建索引改为按 `PRAGMA user_version` 每库只做一次：
+  单次调用 9~11ms → 约 5ms（原来 16 条 DDL 每次 `_conn()` 都跑一遍）。
 
 ### 已知未做
 
 - 规则误报治理（`DML002` 对主键等值、`SUBQ001/002` 对非相关子查询、`TYPE001` 对日期列）；
   需要先定"WHERE 非主键等值时该不该报"的产品标准。
-- `sqltk-store` 的连接复用（当前每次 `_conn()` 约 9ms，且每次都跑一遍建表 DDL）。
-- 真实数据库的连通性验证与 MCP 客户端的实际挂载验证（现全部为无 DB 单测）。
+- `sqltk-store` 的连接复用（当前每次 `_conn()` 约 5ms，且每次都跑一遍建表 DDL）。
+  建表/补列/建索引已改为按 `PRAGMA user_version` 只做一次（9~11ms → 5ms）；
+  剩下的开销是每次 open 文件的固定成本（本机 Windows 实测 connect 本身就要 6ms），
+  再往下只能常驻连接，那会引入 WAL 增长与多进程写锁的复杂度，暂不做。
+- 真实数据库的连通性验证（现全部为无 DB 单测；MCP 挂载已由 `scripts/smoke-mcp.py` 覆盖）。

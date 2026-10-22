@@ -110,9 +110,11 @@ mcp-sql-review call review_sql --args '{"sql": "SELECT * FROM t WHERE 1=1", "dia
 
 ```bash
 python scripts/dev-install.py            # 把所需的仓以 editable 方式装进当前 venv
-python scripts/test-all.py               # 依次跑 12 个测试套件（合计 225 项）
+python scripts/test-all.py               # 依次跑 12 个测试套件（合计 304 项，逐套件报数）
 python scripts/test-all.py --only dbwatch
 python scripts/check-boundaries.py       # 检查跨 MCP import（应为 0）
+python scripts/smoke-mcp.py              # 用真实 MCP 客户端把 6 个 server 各挂一次
+python scripts/verify-wheels.py           # 发布前：wheel 装进干净 venv 验证（先 make build）
 ```
 
 不想装也能跑：每个测试文件自带兄弟目录探测，`python mcp-dbwatch/tests/test_dbwatch.py` 直接可运行。
