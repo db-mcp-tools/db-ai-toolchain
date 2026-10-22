@@ -33,11 +33,14 @@ from dbcore import metrics as M
 from dbcore import baselines as BL
 from dbcore import signature as SG
 from dbcore import report as RPT
+from dbcore import health as HB
 from dbcore.dialect import normalize_dialect
 from dbcore.ids import instance_id_from_dsn
 from dbcore.profile_store import (
     record_observation, upsert_instance, get_profile, tier_of,
     get_baseline, compute_baselines, get_history, instance_summary,
+    list_metric_baselines, record_metric_sample, metric_series,
+    find_recent_changes, add_suspect_link, open_incident, update_incident,
 )
 from dbcore.protocol import Result, ToolError
 
@@ -251,7 +254,33 @@ def capture_snapshot(url: str, dialect: str = "mysql", sections: list[str] | Non
         upsert_instance(iid, dialect=d, version=str(snap.get("version") or ""),
                         database_name=(snap.get("target") or "").rsplit("/", 1)[-1],
                         meta={"captured_at": snap.get("captured_at_iso")})
+        prev_raw = None
+        prev_hist = get_history(iid, kind="snapshot", limit=1)
+        if prev_hist:
+            prev_raw = (prev_hist[0]["payload"] or {}).get("raw_counters")
+        raw_now: dict[str, float] = {}
+        for k, v in (snap.get("metrics") or {}).items():
+            if v is None or isinstance(v, bool):
+                continue
+            if not isinstance(v, (int, float)):
+                try:
+                    v = float(v)
+                except (TypeError, ValueError):
+                    continue
+            if M.is_counter(k):
+                raw_now[k] = float(v)            # counter 存原始累计读数，供下次差分
+            else:
+                record_metric_sample(iid, k, float(v), correlation_id=correlation_id)
+        rates, warns = M.diff_raw_counters(prev_raw, raw_now,
+                                           dt=time.time() - float((prev_hist[0]["ts"] if prev_hist else time.time())),
+                                           names=[k for k in raw_now if prev_raw and k in (prev_raw or {})])
+        for k, r in rates.items():
+            record_metric_sample(iid, k, float(r), correlation_id=correlation_id)
+        for w in warns:
+            snap.setdefault("warnings", []).append(f"counter 差分：{w}")
         record_observation(iid, "snapshot", {"metrics": snap.get("metrics"),
+                                             "raw_counters": raw_now,
+                                             "counter_rates": rates,
                                              "summary": BS.snapshot_summary(snap)})
     summary = BS.snapshot_summary(snap)
     res = Result(
@@ -573,7 +602,11 @@ def _err_code(text: str) -> str:
 
 def health_score(instance_id: str = "", url: str = "", dialect: str = "mysql",
                  correlation_id: str = "") -> Result:
-    """实例健康评分 + 扣分明细。有基线时对比基线，没有就用静态阈值。"""
+    """实例健康评分（维度树）+ 违规明细。
+
+    六维度：可用性/性能/锁与并发/复制/容量/配置卫生；
+    Tier2 时以实例自身分位数基线为界，否则用静态告警线。
+    """
     metrics: dict = {}
     if not instance_id and url:
         instance_id = _iid(url)
@@ -584,44 +617,36 @@ def health_score(instance_id: str = "", url: str = "", dialect: str = "mysql",
     if not metrics:
         raise ToolError("E_NOT_TIER2",
                         "没有快照数据。先调用 capture_snapshot（一次即可）")
-    d = dialect
-    alerts = M.evaluate({k: v for k, v in metrics.items() if v is not None})
-    score = 100
-    deductions = []
-    for a in alerts:
-        pen = 20 if a["level"] == "critical" else 8
-        score -= pen
-        deductions.append({"metric": a["metric"], "value": a["value"],
-                           "penalty": pen, "reason": f"超过 {a['level']} 阈值 {a['threshold']}"})
-    baseline_alerts = []
-    base = get_baseline(instance_id, "connections_used") if instance_id else None
-    if base:
-        cur = metrics.get("connections_used")
-        if cur is not None:
-            dev = (cur - base["value"]) / max(base["value"], 1) * 100
-            if abs(dev) > 50:
-                score -= 10
-                baseline_alerts.append({"metric": "connections_used", "current": cur,
-                                        "baseline": base["value"], "deviation_pct": round(dev, 1)})
-    score = max(0, min(100, score))
-    tier = "tier2" if base else "tier1"
+    # Tier2：取动态分位数基线
+    baselines: dict[str, dict] = {}
+    if instance_id:
+        for bl in list_metric_baselines(instance_id, window="1h"):
+            baselines[bl["metric"]] = bl
+    hs = HB.health_score(metrics, dialect=dialect, baselines=baselines)
+    score = hs["score"]
+    tier = "tier2" if baselines else "tier1"
     res = Result(
         ok=True, mcp=MCP_NAME, tool="health_score",
-        data={"score": score, "deductions": deductions, "baseline_deviation": baseline_alerts,
+        data={"score": score, "grade": hs["grade"], "dimensions": hs["dimensions"],
+              "worst_dimensions": [{"dimension": d["dimension"], "score": d["score"],
+                                    "weight": d["weight"]} for d in hs["worst"]],
               "metrics_used": metrics,
-              "grade": "优" if score >= 90 else "良" if score >= 75 else
-                       "差" if score >= 60 else "危险"},
-        verdict="pass" if score >= 90 else ("warn" if score >= 75 else "fail"),
+              "baseline_used": sorted(baselines.keys())},
+        verdict=hs["verdict"],
         confidence="high", tier=tier,
-        summary=f"健康分 {score}（{res_grade(score)}），{len(deductions)} 项扣分",
+        summary=f"健康分 {score}（{res_grade(score)}），最弱维度："
+                f"{hs['worst'][0]['dimension']} {hs['worst'][0]['score']}" if hs["worst"]
+                else f"健康分 {score}",
         instance_id=instance_id, correlation_id=correlation_id,
     )
-    for dd in deductions[:6]:
-        res.add_evidence("runtime_metric", f"health.{dd['metric']}", f"{dd['value']}",
-                         f"扣 {dd['penalty']} 分：{dd['reason']}")
-    if not base:
-        res.tier_upgrade = {"to": "tier2", "need": "多次快照形成自身基线",
-                            "how": "定期执行 capture_snapshot",
+    for dim in hs["dimensions"]:
+        for s in dim["subs"]:
+            if s.get("violation") is not None and s["violation"] >= 0.5:
+                res.add_evidence("runtime_metric", f"health.{s['metric']}", s["value"],
+                                 f"维度[{dim['dimension']}]违规度 {s['violation']}：{s['threshold_source']}")
+    if not baselines:
+        res.tier_upgrade = {"to": "tier2", "need": "多次快照形成自身分位数基线",
+                            "how": "定期执行 capture_snapshot（>=30 个样本后 compute_metric_baselines）",
                             "gain": "健康分将对比该实例自身常态，而不是通用阈值"}
     return res
 
@@ -727,20 +752,41 @@ def anomaly_report(instance_id: str, window_days: int = 30,
                                   "direction": "高于常态" if z > 0 else "低于常态",
                                   "samples": len(vs)})
     anomalies.sort(key=lambda a: -abs(a["z_score"]))
+
+    # 变更-异常时间关联（§2.2.1）：异常点之前 30 分钟内有变更单迁移 ⇒ suspect_link
+    now_ts = time.time()
+    suspect_changes = find_recent_changes(instance_id, now_ts, window_seconds=1800)
+    for i, a in enumerate(anomalies[:5]):
+        anomaly_id = f"an:{instance_id}:{a['metric']}:{int(now_ts)}"
+        for chg in suspect_changes:
+            add_suspect_link(anomaly_id, chg["change_id"], chg["delta_seconds"])
+        a["anomaly_id"] = anomaly_id
+        a["suspect_changes"] = suspect_changes
+    if anomalies:
+        record_observation(instance_id, "symptom",
+                           {"text": "自动异常检测：" + "、".join(a["metric"] for a in anomalies[:5]),
+                            "source": "anomaly_report", "anomaly_ids": [a.get("anomaly_id") for a in anomalies[:5]]})
+
     res = Result(
         ok=True, mcp=MCP_NAME, tool="anomaly_report",
         data={"mode": "self_baseline", "samples": len(hist), "window_days": window_days,
-              "anomalies": anomalies, "baselines": baselines},
+              "anomalies": anomalies, "baselines": baselines,
+              "suspect_changes": suspect_changes},
         verdict="fail" if any(abs(a["z_score"]) >= 3 for a in anomalies)
                 else ("warn" if anomalies else "pass"),
         confidence="high", tier="tier2",
-        summary=f"基于自身基线发现 {len(anomalies)} 项异常（样本 {len(hist)}）",
+        summary=f"基于自身基线发现 {len(anomalies)} 项异常（样本 {len(hist)}）"
+                + (f"，疑似关联变更 {len(suspect_changes)} 个" if suspect_changes and anomalies else ""),
         instance_id=instance_id, correlation_id=correlation_id,
     )
     for a in anomalies[:6]:
         res.add_evidence("history", f"anomaly.{a['metric']}",
                          f"当前 {a['latest']}，常态均值 {a['mean']}（z={a['z_score']}）",
                          f"{a['direction']}，偏离超过 2 个标准差")
+    if anomalies and suspect_changes:
+        res.next("change-risk", "change_status",
+                 change_id=suspect_changes[0]["change_id"], instance_id=instance_id,
+                 reason="异常发生在该变更后 30 分钟内，建议核对变更", priority=1, optional=True)
     return res
 
 
@@ -770,14 +816,30 @@ def incident_report(instance_id: str = "", symptom: str = "", title: str = "",
     md = RCA.render_diagnosis(diagnosis)
     if title:
         md = f"# {title}\n\n{md}"
+    # 归档为事故单（instance_id 已知时），timeline 记录诊断动作
+    incident_id = ""
+    if instance_id:
+        try:
+            incident_id = open_incident(instance_id, symptom or (diagnosis.get("summary") or "未描述现象"))
+            update_incident(incident_id,
+                            diagnosis={"tier": diagnosis.get("tier"),
+                                       "primary": (diagnosis.get("primary") or {}).get("id"),
+                                       "primary_title": (diagnosis.get("primary") or {}).get("title"),
+                                       "confidence": (diagnosis.get("primary") or {}).get("confidence"),
+                                       "evidence_sufficient": diagnosis.get("evidence_sufficient")},
+                            timeline_event={"ev": "diagnose", "tool": "incident_report"})
+        except Exception:
+            incident_id = ""
     return Result(
         ok=True, mcp=MCP_NAME, tool="incident_report",
-        data={"markdown": md, "diagnosis": {k: v for k, v in diagnosis.items()
-                                            if k in ("tier", "summary", "primary", "hypotheses")}},
+        data={"markdown": md,
+              "incident_id": incident_id,
+              "diagnosis": {k: v for k, v in diagnosis.items()
+                            if k in ("tier", "summary", "primary", "hypotheses")}},
         verdict="warn", confidence=(diagnosis.get("primary") or {}).get("confidence", "medium"),
         tier=diagnosis.get("tier", "tier0"),
-        summary=f"已生成事故报告（{diagnosis.get('tier')}，"
-                f"{len(md.splitlines())} 行）",
+        summary=f"已生成事故报告（{diagnosis.get('tier')}，{len(md.splitlines())} 行）"
+                + (f"，已归档为事故单 {incident_id}" if incident_id else ""),
         instance_id=instance_id, correlation_id=correlation_id,
     )
 

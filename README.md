@@ -53,7 +53,7 @@ db-ai-toolchain/
 │   ├── dbwatch/           15 工具  值守 + 根因（Tier0 可用）
 │   ├── migration-diff/    12 工具  国产化迁移正确性验证
 │   ├── data-semantics/    13 工具  数据口径治理
-│   └── profile-hub/       18 工具  档案中枢（唯一数据落点）
+│   └── profile-hub/       25 工具  档案中枢（唯一数据落点）
 │
 ├── cli/dbt.py             单一 CLI，可驱动全部能力（CI 用）
 ├── tests/test_all.py      143 项回归测试（不需要真实数据库）
@@ -71,9 +71,9 @@ db-ai-toolchain/
 | **dbwatch** | 15 | 症状/快照 → 假设排序 → 检查清单 → 处置 → 事故报告 |
 | **migration-diff** | 12 | 差异扫描 → 等价改写 → 两层数据比对 → 就绪度报告 |
 | **data-semantics** | 13 | 口径结构化 → 结构化 diff → 逐层下钻 → 契约固化 |
-| **profile-hub** | 18 | 所有 MCP 的唯一数据落点 + 知识包导入导出 |
+| **profile-hub** | 25 | 所有 MCP 的唯一数据落点 + 知识包导入导出 |
 
-合计 **86 个工具**。完整清单见 `DESIGN.md §3`。
+合计 **93 个工具**。完整清单见 `DESIGN.md §3`。
 
 ---
 

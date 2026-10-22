@@ -33,6 +33,8 @@ from dbcore.profile_store import (
     link_cross_instance, related_instances,
     put_dictionary, get_dictionary, list_dictionary,
     export_profile, import_profile, store_stats, store_path,
+    record_finding, transition_finding, list_findings, finding_stats,
+    top_sql, metric_series, compute_metric_baselines, list_incidents,
 )
 from dbcore.protocol import Result, ToolError
 
@@ -342,6 +344,112 @@ def tier_of_tool(instance_id: str, kind: str | None = None,
     )
 
 
+# ==================================================================
+# v3：技术债账本 / SQL 档案 / 分位数基线 / 事故
+# ==================================================================
+
+
+def record_finding_tool(instance_id: str, rule_id: str, object_ref: str = "",
+                        fingerprint: str = "", severity: str = "medium",
+                        correlation_id: str = "") -> Result:
+    """登记/累加一条体检发现（技术债账本）。重复出现自动 occurrences+1。"""
+    if not instance_id:
+        raise ToolError("E_ARGS", "instance_id 必填：账本按实例隔离")
+    info = record_finding(instance_id, rule_id, object_ref=object_ref,
+                          fingerprint=fingerprint, severity=severity)
+    return Result(
+        ok=True, mcp=MCP_NAME, tool="record_finding", data=info,
+        verdict="pass", confidence="high", tier="tier0",
+        summary=f"发现已入账本：{rule_id} @ {object_ref or fingerprint or '匿名对象'}"
+                f"（累计 {info['occurrences']} 次，状态 {info['status']}）",
+        instance_id=instance_id, correlation_id=correlation_id,
+    )
+
+
+def transition_finding_tool(finding_id: str, to_state: str, fixed_by_change: str = "",
+                            dismiss_reason: str = "", correlation_id: str = "") -> Result:
+    """推进发现的生命周期：open→confirmed→fixing→fixed→verified / dismissed（状态机校验）。"""
+    try:
+        info = transition_finding(finding_id, to_state,
+                                  fixed_by_change=fixed_by_change,
+                                  dismiss_reason=dismiss_reason)
+    except ValueError as exc:
+        raise ToolError("E_STATE", str(exc))
+    return Result(
+        ok=True, mcp=MCP_NAME, tool="transition_finding", data=info,
+        verdict="pass", confidence="high", tier="tier0",
+        summary=f"生命周期已推进：{finding_id[:40]} → {to_state}",
+        correlation_id=correlation_id,
+    )
+
+
+def finding_stats_tool(instance_id: str, status: str | None = None,
+                       correlation_id: str = "") -> Result:
+    """技术债总览（月报素材）：开放/已修复/误报率 + 明细清单。"""
+    return Result(
+        ok=True, mcp=MCP_NAME, tool="finding_stats",
+        data={"stats": finding_stats(instance_id),
+              "items": list_findings(instance_id, status=status, limit=100)},
+        verdict="pass", confidence="high", tier="tier0",
+        summary=f"技术债账本：{finding_stats(instance_id)['open']} 项开放",
+        instance_id=instance_id, correlation_id=correlation_id,
+    )
+
+
+def top_sql_tool(limit: int = 20, correlation_id: str = "") -> Result:
+    """出现次数最多的 SQL（一条 SQL 的一生）。"""
+    items = top_sql(limit=limit)
+    return Result(
+        ok=True, mcp=MCP_NAME, tool="top_sql", data={"items": items},
+        verdict="pass", confidence="high", tier="tier0",
+        summary=f"共 {len(items)} 条 SQL 档案，最高出现 {items[0]['occurrence_count']} 次" if items
+                else "暂无 SQL 档案",
+        correlation_id=correlation_id,
+    )
+
+
+def metric_series_tool(instance_id: str, metric: str, since: float | None = None,
+                       until: float | None = None, correlation_id: str = "") -> Result:
+    """读取一维指标时间序列（趋势/容量/异常检测的统一输入）。"""
+    pts = metric_series(instance_id, metric, since=since, until=until)
+    return Result(
+        ok=True, mcp=MCP_NAME, tool="metric_series",
+        data={"metric": metric, "points": len(pts), "series": pts[-500:]},
+        verdict="pass", confidence="high",
+        tier="tier2" if len(pts) >= 2 else "tier1",
+        summary=f"{metric} 共 {len(pts)} 个样本点",
+        instance_id=instance_id, correlation_id=correlation_id,
+    )
+
+
+def compute_metric_baselines_tool(instance_id: str, window: str = "1h",
+                                  window_days: int = 30, min_samples: int = 30,
+                                  correlation_id: str = "") -> Result:
+    """从 raw 指标样本计算分位数基线（p50/p95/p99）。样本不足的指标跳过，绝不编造。"""
+    out = compute_metric_baselines(instance_id, window=window, window_days=window_days,
+                                   min_samples=min_samples)
+    return Result(
+        ok=True, mcp=MCP_NAME, tool="compute_metric_baselines", data=out,
+        verdict="pass" if out else "warn", confidence="high",
+        tier="tier2" if out else "tier1",
+        summary=(f"已为 {len(out)} 项指标建立分位数基线（window={window}）" if out
+                 else f"样本不足（每指标至少 {min_samples} 个），未建立基线"),
+        instance_id=instance_id, correlation_id=correlation_id,
+    )
+
+
+def list_incidents_tool(instance_id: str, open_only: bool = False,
+                        correlation_id: str = "") -> Result:
+    """事故单清单（含诊断结论与时间线）。"""
+    items = list_incidents(instance_id, open_only=open_only)
+    return Result(
+        ok=True, mcp=MCP_NAME, tool="list_incidents", data={"items": items},
+        verdict="pass", confidence="high", tier="tier0",
+        summary=f"共 {len(items)} 张事故单",
+        instance_id=instance_id, correlation_id=correlation_id,
+    )
+
+
 TOOLS = {
     "upsert_instance": upsert_instance_tool,
     "record_observation": record_observation_tool,
@@ -361,6 +469,14 @@ TOOLS = {
     "list_metrics": list_metrics_tool,
     "tier_of": tier_of_tool,
     "store_stats": store_stats_tool,
+    # v3
+    "record_finding": record_finding_tool,
+    "transition_finding": transition_finding_tool,
+    "finding_stats": finding_stats_tool,
+    "top_sql": top_sql_tool,
+    "metric_series": metric_series_tool,
+    "compute_metric_baselines": compute_metric_baselines_tool,
+    "list_incidents": list_incidents_tool,
 }
 
 for _n, _f in TOOLS.items():

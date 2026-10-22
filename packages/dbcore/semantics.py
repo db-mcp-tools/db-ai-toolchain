@@ -499,44 +499,74 @@ def build_lineage(sqls: dict[str, str], dialect: str | None = None) -> dict:
 # ------------------------------------------------------------------
 
 
-def detect_drift(points: list[dict], tolerance_pct: float = 5.0) -> dict:
+# 按指标类型的容差分级（§2.3.4）：计数类天然波动大，金额类必须严格
+_METRIC_TOLERANCE = {
+    "count": 5.0,
+    "amount": 0.5,
+    "ratio": 2.0,
+    "default": 5.0,
+}
+
+
+def _infer_tolerance(metric_type: str | None, tolerance_pct: float | None) -> float:
+    if tolerance_pct is not None:
+        return tolerance_pct
+    return _METRIC_TOLERANCE.get((metric_type or "default").lower(), _METRIC_TOLERANCE["default"])
+
+
+def detect_drift(points: list[dict], tolerance_pct: float | None = None,
+                 metric_type: str | None = None, confirm_points: int = 2) -> dict:
     """同一指标不同时间的取值序列 -> 漂移判断。points: [{"ts":..., "value":...}]
 
+    容差按指标类型分级（count ±5% / amount ±0.5% / ratio ±2%）；
+    误报治理：**连续 confirm_points 个点超差才判漂移**，单点毛刺不告警。
     只有 1 个点时明确返回 insufficient_data，**不假装能判断趋势**。
     """
     if len(points) < 2:
         return {
             "status": "insufficient_data",
-            "message": f"只有 {len(points)} 个数据点（至少需要 2 个），无法判断漂移",
+            "message": f"只有 {len(points)} 个数据点（至少需要 {confirm_points + 1} 个）",
             "tier": "tier0",
         }
     vals = [p["value"] for p in points if isinstance(p.get("value"), (int, float))]
     if len(vals) < 2:
         return {"status": "insufficient_data", "message": "有效数值点不足 2 个"}
+    tol = _infer_tolerance(metric_type, tolerance_pct)
     base = vals[0]
     latest = vals[-1]
     change_pct = ((latest - base) / base * 100) if base else None
     mx, mn = max(vals), min(vals)
     spread = ((mx - mn) / mn * 100) if mn else None
-    # 最后一步的突变往往比整体波动更重要
+    # 逐步超差序列：连续 confirm_points 个点超差才确认（防毛刺误报）
     step_changes = [
         {"from_index": i, "pct": round((vals[i + 1] - vals[i]) / vals[i] * 100, 2) if vals[i] else None}
         for i in range(len(vals) - 1)
     ]
-    max_step = max((abs(s["pct"]) for s in step_changes if s["pct"] is not None), default=0)
-    drifted = abs(change_pct or 0) > tolerance_pct or max_step > tolerance_pct * 2
+    breach_flags = [abs(s["pct"]) > tol if s["pct"] is not None else False for s in step_changes]
+    streak = 0
+    confirmed_at = None
+    for i, b in enumerate(breach_flags):
+        streak = streak + 1 if b else 0
+        if streak >= confirm_points and confirmed_at is None:
+            confirmed_at = i
+    drifted = confirmed_at is not None or (abs(change_pct or 0) > tol and len(vals) >= confirm_points + 1)
     return {
         "status": "ok",
         "points": len(vals),
+        "metric_type": (metric_type or "default"),
         "base": base, "latest": latest,
         "change_pct": round(change_pct, 2) if change_pct is not None else None,
         "spread_pct": round(spread, 2) if spread is not None else None,
-        "max_step_pct": round(max_step, 2),
+        "max_step_pct": round(max((abs(s["pct"]) for s in step_changes if s["pct"] is not None), default=0), 2),
         "drifted": drifted,
-        "tolerance_pct": tolerance_pct,
+        "confirmed_by_consecutive": confirmed_at is not None,
+        "confirm_points": confirm_points,
+        "tolerance_pct": tol,
         "step_changes": step_changes[-10:],
-        "verdict": ("检测到漂移，建议核对最近是否有口径变更或数据源变更"
-                    if drifted else "在容差范围内"),
+        "verdict": ("连续超差，判定漂移——建议核对最近是否有口径变更或数据源变更"
+                    if drifted else
+                    ("有单点毛刺但在容差内（连续超差才告警）" if any(breach_flags)
+                     else "在容差范围内")),
         "note": "漂移只说明结果变了，不说明为什么变。要定位原因用 reconcile 逐层下钻。",
     }
 

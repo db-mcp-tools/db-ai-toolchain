@@ -636,6 +636,155 @@ for _mod_name in ("select", "dml", "type", "tx", "engine", "subquery"):
 check("每条规则的 _mk 严重度与 META 一致", not _mismatch, str(_mismatch))
 
 # ==================================================================
+# 13. 数据建模 v3：差分 / 分位数基线 / 技术债账本 / RCA 因子 / 健康分 / 关联 / advisor / drift
+# ==================================================================
+print("13. 数据建模 v3（docs/DATA_MODEL_AND_ALGORITHMS.md）")
+
+import time as _t
+import dbcore.profile_store as PS
+from dbcore.metrics import diff_counter, diff_raw_counters, is_counter, COUNTER_ALIASES
+from dbcore.health import health_score as _hs
+from dbcore.advisor import rank_candidates
+from dbcore.semantics import detect_drift as _drift
+from dbcore import rca as _RCA
+from dbcore import risk as _RISK
+
+# 13.1 counter/gauge 差分
+check("qps 标记为 counter、connections_used 为 gauge",
+      is_counter("qps") and not is_counter("connections_used"))
+_r, _w = diff_counter(1000.0, 2000.0, 60.0)
+check("counter 差分：正常速率", _r == 16.6667 and _w is None, f"{_r}")
+_r, _w = diff_counter(2000.0, 1000.0, 60.0)
+check("counter 差分：值回落判定重启并作废", _r is None and _w == "restart")
+_rates, _warns = diff_raw_counters({"qps": 600}, {"qps": 1200}, 60.0)
+check("批量差分产出速率", _rates.get("qps") == 10.0 and not _warns)
+
+# 13.2 profile_store v3（用临时库）
+_orig_store = os.environ.get("DBT_STORE")
+os.environ["DBTSTORE"] = ""
+import tempfile, sqlite3 as _sq3
+_tmpdb = os.path.join(tempfile.mkdtemp(), "v3test.db")
+os.environ["DBT_STORE"] = _tmpdb
+_iid = "it:v3:model"
+PS.upsert_instance(_iid, dialect="mysql", version="8.0")
+for _i in range(40):
+    PS.record_metric_sample(_iid, "qps", 100 + _i)
+PS.record_observation(_iid, "snapshot", {"metrics": {"connections_used": 12}})
+check("metric_series 读回 40 个样本", len(PS.metric_series(_iid, "qps")) == 40)
+check("tier 判定正常", PS.tier_of(_iid) == "tier1")
+PS.aggregate_windows(_iid, "1h")
+_bl = PS.compute_metric_baselines(_iid, "1h", min_samples=10)
+check("分位数基线已建立且带 spread", _bl.get("qps", {}).get("spread", 0) > 0)
+_blq = PS.get_metric_baseline(_iid, "qps", "1h")
+check("get_metric_baseline 返回 p50/p95", _blq is not None and _blq["p50"] > 0)
+check("无基线指标返回 None（不猜）", PS.get_metric_baseline(_iid, "not_exists", "1h") is None)
+for _ in range(3):
+    PS.record_sql_seen("fp:model1", "SELECT * FROM t", "select")
+check("SQL 档案累计出现次数", PS.get_sql_profile("fp:model1")["occurrence_count"] == 3)
+_f = PS.record_finding(_iid, "SEL001", object_ref="t", fingerprint="fp:model1", severity="medium")
+PS.record_finding(_iid, "SEL001", object_ref="t", fingerprint="fp:model1", severity="high")
+_lc = PS.list_findings(_iid)
+check("账本聚合同一发现且取更严重 severity",
+      len(_lc) == 1 and _lc[0]["occurrences"] == 2 and _lc[0]["severity"] == "high")
+PS.transition_finding(_f["finding_id"], "confirmed")
+PS.transition_finding(_f["finding_id"], "fixing")
+PS.transition_finding(_f["finding_id"], "fixed")
+PS.transition_finding(_f["finding_id"], "verified")
+try:
+    PS.transition_finding(_f["finding_id"], "open")
+    check("verified 是终态不许再转移", False)
+except ValueError:
+    check("verified 是终态不许再转移", True)
+_st = PS.finding_stats(_iid)
+check("finding_stats 口径正确", _st["done"] == 1 and _st["open"] == 0)
+_inc = PS.open_incident(_iid, "测试事故")
+PS.update_incident(_inc, diagnosis={"primary": "REPL001"}, timeline_event={"ev": "t"})
+PS.close_incident(_inc)
+_li = PS.list_incidents(_iid)
+check("事故单闭环且有诊断与时间线",
+      _li and _li[0]["closed_at_iso"] and _li[0]["diagnosis"].get("primary") == "REPL001"
+      and _li[0]["timeline"])
+PS.add_suspect_link("an:x", "chg:y", 42.0)
+check("suspect_link 读写", PS.suspects_for("an:x")[0]["change_id"] == "chg:y")
+if _orig_store is None:
+    os.environ.pop("DBT_STORE", None)
+else:
+    os.environ["DBT_STORE"] = _orig_store
+
+# 13.3 RCA 假设-证据模型
+_snap = {"dialect": "mysql",
+         "metrics": {"repl_lag_seconds": 3600, "lock_wait_count": 0},
+         "sections": {"params": {}, "tables_no_pk": {"rows": [["t1"]]}}}
+_rc = _RCA.diagnose(snapshot=_snap, symptom="主从延迟突增")
+_p = _rc["primary"]
+check("RCA：首选假设正确", _p["id"] == "REPL001")
+check("RCA：每条假设带 prior 与 falsified_by",
+      _p.get("prior", 0) > 0 and bool(_p.get("falsified_by")))
+check("RCA：支撑证据非空", len(_p["supporting"]) >= 2)
+check("RCA：归一化得分和为 1",
+      abs(sum(h["score_norm"] for h in _rc["hypotheses"]) - 1.0) < 0.01)
+_rc0 = _RCA.diagnose(symptom="磁盘空间不足")
+check("RCA Tier0：也有 falsified_by", bool((_rc0["primary"] or {}).get("falsified_by")))
+
+# 13.4 风险因子模型
+_rp = _RISK.assess_change("DROP TABLE orders", "mysql")
+check("因子模型：DROP_TABLE 判 L3 且带 factors 明细",
+      _rp.ops[0].risk == "L3" and len(_rp.ops[0].factors) == 6)
+check("因子模型：分数与因子贡献一致",
+      abs(_rp.ops[0].risk_score - sum(f["contribution"] for f in _rp.ops[0].factors)) <= 1)
+_rb = _RISK.assess_change("ALTER TABLE t ADD COLUMN c INT", "mysql", table_rows=50_000_000)
+check("大表硬性下限：5000万行 ADD_COLUMN 至少 L2", _rb.ops[0].risk in ("L2", "L3"))
+
+# 13.5 健康分维度树
+_hgood = _hs({"connections_used_pct": 20, "threads_active": 5, "lock_wait_count": 0,
+              "repl_lag_seconds": 0, "repl_io_running": 1, "repl_sql_running": 1,
+              "disk_used_pct": 40, "memory_used_pct": 50}, "mysql")
+_hbad = _hs({"connections_used_pct": 99, "threads_active": 300, "lock_wait_count": 50,
+             "lock_wait_max_seconds": 120, "repl_lag_seconds": 3600,
+             "repl_io_running": 0, "disk_used_pct": 97, "memory_used_pct": 95}, "mysql")
+check("健康分：健康实例 >= 90", _hgood["score"] >= 90, str(_hgood["score"]))
+check("健康分：恶化实例显著低于健康实例", _hbad["score"] < _hgood["score"] - 30,
+      f"{_hbad['score']} vs {_hgood['score']}")
+check("健康分：六维度齐全且权重和为 100",
+      len(_hgood["dimensions"]) == 6 and
+      abs(sum(d["weight"] for d in _hgood["dimensions"]) - 100) < 0.01)
+check("健康分：未采集指标不当 0（跳过并注明）",
+      any(s.get("note") for d in _hgood["dimensions"] for s in d["subs"]))
+
+# 13.6 advisor 收益-代价
+_rk = rank_candidates(["uid", "status", "created_at"],
+                      {"uid": 0.9, "status": 0.02, "created_at": None},
+                      table_rows=10_000_000, write_freq=500)
+check("advisor：高选择性排前", _rk[0]["column"] == "uid")
+check("advisor：无选择性数据标注未验证",
+      _rk[-1]["column"] == "created_at" and _rk[-1]["verified"] is False)
+
+# 13.7 drift 容差分级 + 连续确认
+_d1 = _drift([{"value": 100}, {"value": 106}, {"value": 101}, {"value": 100}])
+check("drift：单点毛刺不告警", not _d1["drifted"])
+_d2 = _drift([{"value": 100}, {"value": 110}, {"value": 121}])
+check("drift：连续超差告警", _d2["drifted"])
+_d3 = _drift([{"value": 1000}, {"value": 1010}, {"value": 1020}], metric_type="amount")
+check("drift：金额类容差收紧到 0.5%", _d3["tolerance_pct"] == 0.5 and _d3["drifted"])
+
+# 13.8 capture_snapshot 写 metric_sample + change_event 收口
+import dbcore.execution as _EX
+_plan = _EX.build_plan(change_id="chg:model-test", sql="ALTER TABLE t ADD COLUMN c2 INT",
+                       dialect="mysql", instance_id="it:v3:exec",
+                       risk={"risk_level": "L1"})
+os.environ["DBT_STORE"] = _tmpdb
+try:
+    _EX.transition(_plan, "prechecked", actor="tester")
+    _evs = PS.get_history("it:v3:exec", kind="change_event")
+    check("变更状态机迁移自动写 change_event", len(_evs) == 1 and
+          _evs[0]["payload"]["to_state"] == "prechecked")
+finally:
+    if _orig_store is None:
+        os.environ.pop("DBT_STORE", None)
+    else:
+        os.environ["DBT_STORE"] = _orig_store
+
+# ==================================================================
 print("\n" + "=" * 60)
 print(f"通过 {len(PASSED)} 项，失败 {len(FAILED)} 项")
 if FAILED:

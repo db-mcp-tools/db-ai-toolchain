@@ -50,6 +50,9 @@ class ChangeOp:
     preconditions: list[str] = field(default_factory=list)
     rollback: str = ""
     notes: list[str] = field(default_factory=list)
+    # 因子模型输出（§2.1.2）：每个因子 {name, weight, value, contribution, basis}
+    risk_score: int = 0
+    factors: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -63,12 +66,14 @@ class ChangePlan:
     ops: list[ChangeOp] = field(default_factory=list)
     overall_risk: str = L0
     verdict: str = ""
+    overall_score: int = 0
 
     def to_dict(self) -> dict:
         return {
             "dialect": self.dialect,
             "overall_risk": self.overall_risk,
             "overall_risk_desc": RISK_DESC[self.overall_risk],
+            "overall_score": self.overall_score,
             "verdict": self.verdict,
             "ops": [o.to_dict() for o in self.ops],
         }
@@ -135,6 +140,101 @@ MATRIX = {"mysql": _MYSQL_MATRIX, "postgres": _PG_MATRIX, "oracle": dict(_MYSQL_
 
 _ROWS_TIERS = ((1_000_000, "小表（<100万行）"), (10_000_000, "中表（100万-1000万）"), (10 ** 18, "大表（>1000万行）"))
 
+# --------------------------------------------------------------- 因子模型（§2.1.2）
+# Risk(0-100) = Σ weight_i · value_i；每个因子贡献可解释，权重可按客户调。
+# 矩阵里的 risk 等级是引擎知识（下限），因子分负责放大与解释，不允许把矩阵等级冲淡。
+_FACTOR_WEIGHTS = {
+    "操作破坏性": 30,
+    "影响行数": 20,
+    "锁持有语义": 15,
+    "回滚可行性": 15,
+    "执行时机": 10,
+    "对象热度": 10,
+}
+_L_BASE = {L0: 0.1, L1: 0.3, L2: 0.6, L3: 1.0}          # 破坏性因子取值
+_LOCK_HEAVY = ("copy table", "access exclusive", "全程", "阻塞写入", "阻塞并发 dml", "持锁")
+_LOCK_MID = ("inplace", "concurrently", "校验", "重建", "扫描", "锁窗口")
+
+
+def _lock_factor(lock_text: str) -> tuple[float, str]:
+    low = (lock_text or "").lower()
+    if any(k in low for k in _LOCK_HEAVY):
+        return 1.0, "锁语义：全程持锁/重写全表"
+    if any(k in low for k in _LOCK_MID):
+        return 0.6, "锁语义：在线但存在锁窗口"
+    return 0.2, "锁语义：元数据级"
+
+
+def _rollback_factor(rollback_text: str) -> tuple[float, str]:
+    t = rollback_text or ""
+    if t.startswith("-- 不可逆"):
+        return 1.0, "回滚：不可逆操作"
+    if t.startswith("-- 未能"):
+        return 0.7, "回滚：无法自动生成，依赖人工预案"
+    return 0.1, "回滚：可自动生成反向语句"
+
+
+def factor_analysis(op_type: str, spec: dict | None, rollback: str,
+                    table_rows: int | None, during_peak: bool) -> tuple[int, str, list[dict]]:
+    """计算单操作的因子分。返回 (0-100 分, 风险等级 L0-L3, 因子明细)。
+
+    数据未知时按中性 0.5 计并在 basis 里注明 —— 不许猜也不许当 0（当 0 会假性降低风险）。
+    """
+    base_risk = spec["risk"] if spec else L2
+    factors: list[dict] = []
+
+    f1 = _L_BASE[base_risk]
+    factors.append({"name": "操作破坏性", "weight": _FACTOR_WEIGHTS["操作破坏性"], "value": f1,
+                    "contribution": round(f1 * _FACTOR_WEIGHTS["操作破坏性"], 1),
+                    "basis": f"操作 {op_type} 的矩阵基线为 {base_risk}"})
+
+    if table_rows is None:
+        f2 = 0.5
+        basis2 = "行数未知，按中性计（传入 table_rows 可提高准确度）"
+    else:
+        import math
+        f2 = min(1.0, math.log10(max(table_rows, 1)) / 8.0)
+        basis2 = f"行数 {table_rows}（log10 标度）"
+    factors.append({"name": "影响行数", "weight": _FACTOR_WEIGHTS["影响行数"], "value": round(f2, 3),
+                    "contribution": round(f2 * _FACTOR_WEIGHTS["影响行数"], 1), "basis": basis2})
+
+    if spec:
+        f3, basis3 = _lock_factor(spec.get("lock", ""))
+    else:
+        f3, basis3 = 0.8, "未知操作，按高锁风险计"
+    factors.append({"name": "锁持有语义", "weight": _FACTOR_WEIGHTS["锁持有语义"], "value": f3,
+                    "contribution": round(f3 * _FACTOR_WEIGHTS["锁持有语义"], 1), "basis": basis3})
+
+    f4, basis4 = _rollback_factor(rollback)
+    factors.append({"name": "回滚可行性", "weight": _FACTOR_WEIGHTS["回滚可行性"], "value": f4,
+                    "contribution": round(f4 * _FACTOR_WEIGHTS["回滚可行性"], 1), "basis": basis4})
+
+    f5 = 1.0 if during_peak else 0.2
+    factors.append({"name": "执行时机", "weight": _FACTOR_WEIGHTS["执行时机"], "value": f5,
+                    "contribution": round(f5 * _FACTOR_WEIGHTS["执行时机"], 1),
+                    "basis": "业务高峰" if during_peak else "非高峰（默认按低峰计）"})
+
+    f6 = 0.5
+    factors.append({"name": "对象热度", "weight": _FACTOR_WEIGHTS["对象热度"], "value": f6,
+                    "contribution": round(f6 * _FACTOR_WEIGHTS["对象热度"], 1),
+                    "basis": "热度未知按中性计（Tier2 接入慢日志/审计后可用真实热度）"})
+
+    total = sum(f["contribution"] for f in factors)
+    score = int(round(min(100.0, max(0.0, total))))
+    if score >= 75:
+        level = L3
+    elif score >= 50:
+        level = L2
+    elif score >= 25:
+        level = L1
+    else:
+        level = L0
+    # 引擎知识是下限：矩阵判 L3 的操作不允许被因子分冲淡到 L3 以下
+    order = {L0: 0, L1: 1, L2: 2, L3: 3}
+    if order[level] < order[base_risk]:
+        level = base_risk
+    return score, level, factors
+
 
 def _detect_ops(sql: str) -> list[tuple[str, str | None]]:
     ops: list[tuple[str, str | None]] = []
@@ -148,7 +248,10 @@ def _detect_ops(sql: str) -> list[tuple[str, str | None]]:
 
 
 def assess_change(sql: str, dialect: str | None = None, table_rows: int | None = None, during_peak: bool = False) -> ChangePlan:
-    """评估一条或多条 DDL 的变更风险。"""
+    """评估一条或多条 DDL 的变更风险（因子模型，每个因子贡献可解释）。
+
+    overall = max(矩阵基线等级, 因子分映射等级)；factors[] 里能看到每一分来自哪里。
+    """
     d = normalize_dialect(dialect)
     plan = ChangePlan(dialect=d)
     matrix = MATRIX.get(d, _MYSQL_MATRIX)
@@ -156,42 +259,60 @@ def assess_change(sql: str, dialect: str | None = None, table_rows: int | None =
     for text in split_sql(sql, d):
         for op_type, table in _detect_ops(text):
             spec = matrix.get(op_type)
+            rollback = generate_rollback(text, d)
+            notes: list[str] = []
+            rows_for_factor = table_rows
+
             if spec is None:
-                op = ChangeOp(op_type=op_type, table=table, sql=text, risk=L2,
+                score, level, factors = factor_analysis(op_type, None, rollback,
+                                                        rows_for_factor, during_peak)
+                op = ChangeOp(op_type=op_type, table=table, sql=text, risk=level,
                               lock_impact="未知操作，无法自动评估", recommended_tool="人工评审",
-                              preconditions=["人工确认执行计划"], rollback="", notes=["方言未被风险矩阵覆盖"])
+                              preconditions=["人工确认执行计划"], rollback=rollback,
+                              notes=["方言未被风险矩阵覆盖"], risk_score=score, factors=factors)
                 plan.ops.append(op)
                 continue
 
-            risk = spec["risk"]
-            notes: list[str] = []
-            tier = None
             if table_rows:
                 tier = next(desc for limit, desc in _ROWS_TIERS if table_rows <= limit)
-                if table_rows > 10_000_000 and risk in (L1, L2):
-                    risk = min(L3, max(risk, L2))
+                if table_rows > 10_000_000 and spec["risk"] in (L1, L2):
                     notes.append(f"{tier} + {d}：大表在线 DDL 时长不可控，建议一律走旁路工具")
                 if table_rows < 1_000_000 and op_type in ("ADD_COLUMN", "DROP_INDEX", "SET_DEFAULT"):
                     notes.append(f"{tier}：影响可控")
-            if during_peak and risk != L0:
+            else:
+                notes.append("未提供表行数：行数因子按中性计，建议连库采集后重新评估（estimate_impact）")
+            if during_peak and spec["risk"] != L0:
                 notes.append("业务高峰期执行：元数据锁等待会引发雪崩式会话堆积，务必错峰")
 
+            score, level, factors = factor_analysis(op_type, spec, rollback,
+                                                    rows_for_factor, during_peak)
+            # 大表硬性下限（引擎知识，不因小分被冲淡）：>1000 万行的 L1/L2 操作至少按 L2 处理
+            if table_rows and table_rows > 10_000_000 and spec["risk"] in (L1, L2):
+                order_lv = {L0: 0, L1: 1, L2: 2, L3: 3}
+                if order_lv[level] < order_lv[L2]:
+                    level = L2
+                    factors.append({"name": "大表下限", "weight": 0, "value": 1.0,
+                                    "contribution": 0.0,
+                                    "basis": "行数 >1000 万：矩阵知识要求至少按 L2 处理（旁路工具）"})
             plan.ops.append(
                 ChangeOp(
                     op_type=op_type,
                     table=table,
                     sql=text,
-                    risk=risk,
+                    risk=level,
                     lock_impact=spec["lock"],
                     recommended_tool=spec["tool"],
                     preconditions=list(spec["pre"]),
-                    rollback=generate_rollback(text, d),
+                    rollback=rollback,
                     notes=notes,
+                    risk_score=score,
+                    factors=factors,
                 )
             )
 
     order = {L0: 0, L1: 1, L2: 2, L3: 3}
     plan.overall_risk = max((o.risk for o in plan.ops), key=lambda r: order[r], default=L0)
+    plan.overall_score = max((o.risk_score for o in plan.ops), default=0)
     plan.verdict = {
         L0: "可直接执行（仍需留痕）",
         L1: "低峰窗口执行，执行前跑 precheck_change_window",

@@ -22,7 +22,7 @@ from dbcore.dialect import normalize_dialect
 from dbcore.extract import extract_objects as extract_objects_impl
 from dbcore.guard import GuardError
 from dbcore.ids import sql_fingerprint, normalize_sql_for_fingerprint, instance_id_from_dsn
-from dbcore.profile_store import record_observation
+from dbcore.profile_store import record_observation, record_sql_seen, record_finding
 from dbcore.protocol import Result, ToolError, severity_to_verdict
 
 MCP_NAME = "sql-review"
@@ -81,6 +81,16 @@ def review_sql(sql: str, dialect: str = "mysql", table_rows: int | None = None,
                 + (f"，最严重：{sev}" if sev != "info" else "，未发现明显问题"),
         instance_id=instance_id, correlation_id=correlation_id,
     )
+    # 带实例上下文时：写 SQL 档案 + 技术债账本（复利的落点）
+    if instance_id:
+        try:
+            record_sql_seen(fp, sql, kind="review")
+            for f in data["findings"][:20]:
+                record_finding(instance_id, f["rule_id"],
+                               object_ref=str(f.get("table") or ""),
+                               fingerprint=fp, severity=f["severity"])
+        except Exception:
+            pass
     for f in data["findings"][:10]:
         res.add_evidence("ast", f"rule.{f['rule_id']}", f["message"],
                          f"严重度 {f['severity']}｜建议：{f['suggestion'][:80]}")

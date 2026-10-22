@@ -12,9 +12,48 @@ from dbcore.connectors import ConnectionSpec, MissingDriver, run_readonly
 from dbcore.dialect import normalize_dialect
 
 
+def rank_candidates(candidates: list[str], stats: dict[str, Any], table_rows: int | None = None,
+                    write_freq: float | None = None) -> list[dict[str, Any]]:
+    """候选索引收益-代价排序（§2.5）。纯逻辑，可单测。
+
+    收益：等值查询预估扫描行数 = rows × (1 − selectivity)，收益 = 全表扫描省下的行数。
+    代价：写放大 ≈ 写频率 × 索引列数（Tier0 无写频率数据时标注未知）。
+    Tier0（无行数/选择性数据）→ 输出候选但标注「收益未验证，建议 EXPLAIN 确认」。
+    """
+    out: list[dict[str, Any]] = []
+    for c in candidates:
+        sel = stats.get(c)
+        item: dict[str, Any] = {"column": c, "selectivity": sel}
+        if sel is not None and table_rows:
+            est = max(1, int(table_rows * (1.0 - min(sel, 1.0))))
+            item["est_rows_examined"] = est
+            item["benefit_rows_saved"] = max(0, table_rows - est)
+            item["verified"] = True
+        else:
+            item["est_rows_examined"] = None
+            item["benefit_rows_saved"] = None
+            item["verified"] = False
+            item["note"] = "收益未验证（缺少行数/选择性数据），建议 EXPLAIN 确认"
+        if write_freq is not None:
+            item["write_amplification"] = round(write_freq * 1.0, 2)   # 单列候选
+            item["cost_note"] = f"写放大 ≈ 写频率 {write_freq}/s × 1 列"
+        else:
+            item["write_amplification"] = None
+            item["cost_note"] = "写放大未知（Tier2 接入写频率数据后可量化）"
+        out.append(item)
+    # 已验证的按收益降序排前；未验证的保持相对顺序排后
+    verified = [x for x in out if x["verified"]]
+    unverified = [x for x in out if not x["verified"]]
+    verified.sort(key=lambda x: -(x["benefit_rows_saved"] or 0))
+    return verified + unverified
+
+
 def plan_index(existing: list[dict[str, Any]], candidates: list[str], table: str,
                order_column: str | None = None, schema_map: dict | None = None,
-               dialect: str = "mysql") -> dict:
+               dialect: str = "mysql",
+               selectivity: dict[str, Any] | None = None,
+               table_rows: int | None = None,
+               write_freq: float | None = None) -> dict:
     """纯逻辑：给候选字段排序并检查冗余。不连库，可单测。
 
     existing: [{"name":"idx_a","columns":["a","b"],"unique":False}]
@@ -55,6 +94,7 @@ def plan_index(existing: list[dict[str, Any]], candidates: list[str], table: str
             else (f"已有索引 {covered_prefix} 的前缀已覆盖，通常无需新建（确认选择性后再决定）" if covered_prefix
                   else "可以新建")
         ),
+        "ranking": rank_candidates(ordered, selectivity or {}, table_rows, write_freq),
         "order_rule": "等值字段放前面、按选择性从高到低；范围/排序字段放最后",
     }
 
@@ -69,6 +109,7 @@ def advise_indexes(url: str, table: str, candidates: list[str], dialect: str | N
     existing: list[dict[str, Any]] = []
     stats: dict[str, Any] = {}
     notes: list[str] = []
+    total_rows: int | None = None
 
     if d == "mysql":
         rows = run_readonly(
@@ -129,7 +170,8 @@ def advise_indexes(url: str, table: str, candidates: list[str], dialect: str | N
             notes.append(f"统计信息获取失败：{type(exc).__name__}")
 
     ranked = sorted(candidates, key=lambda c: -(stats.get(c) or 0))
-    proposal = plan_index(existing, ranked, table, order_column=order_column, dialect=d)
+    proposal = plan_index(existing, ranked, table, order_column=order_column, dialect=d,
+                          selectivity=stats, table_rows=total_rows)
 
     return {
         "instance_id": spec.instance_id,

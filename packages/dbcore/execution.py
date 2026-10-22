@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from dbcore import baselines as BL
-from dbcore.profile_store import save_change, load_change, list_changes  # noqa: F401
+from dbcore.profile_store import save_change, load_change, list_changes, record_change_event  # noqa: F401
 
 STATES = ("draft", "prechecked", "dryrun", "shadow", "canary", "applied", "rolled_back", "aborted")
 
@@ -248,6 +248,12 @@ def transition(plan: ChangePlan, to: str, actor: str = "", approver: str = "",
             "state": to, "actor": actor, "text": note,
             "ts_iso": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
         })
+    # 每次状态迁移写一条 change_event 观测 —— 供 dbwatch.anomaly_report 做时间关联
+    if plan.instance_id:
+        try:
+            record_change_event(plan.instance_id, plan.change_id, prev, to, actor=actor)
+        except Exception:
+            pass
     return plan
 
 
