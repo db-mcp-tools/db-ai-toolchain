@@ -22,6 +22,7 @@ SUITES = [
     ("dbt-core", "tests/test_dbcore.py"),
     ("dbt-store", "tests/test_dbstore.py"),
     ("dbt-know", "tests/test_dbknow.py"),
+    ("dbt-mcp-kit", "tests/test_dbmcp.py"),
     ("mcp-sql-review", "tests/test_sql_review.py"),
     ("mcp-change-risk", "tests/test_change_risk.py"),
     ("mcp-dbwatch", "tests/test_dbwatch.py"),
