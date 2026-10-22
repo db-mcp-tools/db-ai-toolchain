@@ -3,7 +3,6 @@
 dbt-core/
 dbt-store/
 dbt-know/
-dbt-mcp-kit/
 mcp-sql-review/
 mcp-change-risk/
 mcp-dbwatch/

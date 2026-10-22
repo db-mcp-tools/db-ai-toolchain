@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import ast
 import pathlib
-import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -33,7 +32,6 @@ LIB_REPOS = {
     "dbt-core": "dbcore",
     "dbt-store": "dbstore",
     "dbt-know": "dbknow",
-    "dbt-mcp-kit": "dbmcp",
 }
 ALL_PKG = {**MCP_REPOS, **LIB_REPOS}
 

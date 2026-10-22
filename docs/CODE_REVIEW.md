@@ -4,6 +4,9 @@
 审查对象：`db-ai-toolchain` 11 仓（dbt-core / dbt-store / dbt-know / dbt-mcp-kit / 6 个 MCP / dbt-orchestrator）
 代码规模：16,787 行 Python，92 个工具，12 个测试套件
 
+> 审查后按架构评审结论合并了 `dbt-mcp-kit` → `dbt-core.mcp_kit`，现为 **10 仓**。
+> 合并理由见第八节末尾与 `ARCHITECTURE.md` §1.1 第 4 条。
+
 ---
 
 ## 一、审查方法与基线
@@ -305,7 +308,7 @@ save_change(plan.instance_id, {
 
 | # | 位置 | 问题 |
 |---|---|---|
-| P2-1 | 7 个 `*/cli.py` | 除描述字符串外**完全相同**（83 行 × 7 = 581 行）。应下沉到 `dbt-mcp-kit`，各仓两行调用 |
+| P2-1 | 7 个 `*/cli.py` | 除描述字符串外**完全相同**（83 行 × 7 = 581 行）。应下沉到 `dbt-core.mcp_kit`，各仓两行调用 |
 | P2-2 | `docs/ARCHITECTURE.md:55` | 写 "~80 个工具"，实际 **92**（各仓 README 的工具表 100% 准确，只有总纲漂移） |
 | P2-3 | `mcp-sql-review/src/sql_review/rules.py:3` | docstring 说"实现已迁移到 `dbcore/rulebook/`"，实际是 `sql_review/rulebook/` |
 | P2-4 | `dbt-core/src/dbcore/protocol.py:163` | 死代码：`d.pop("took_ms", None) or None` 后立刻 `d["took_ms"] = self.took_ms` |
@@ -395,6 +398,32 @@ save_change(plan.instance_id, {
   ✗ 不误报 JOIN002  << WITH t AS (SELECT id FROM x WHERE y=1) S -> {'JOIN002', 'SEL001'}
   ✗ 不误报 JOIN002  << WITH a AS (SELECT 1 AS i), b AS (SELECT  -> {'JOIN002', 'SEL001'}
 ```
+
+### 架构调整：`dbt-mcp-kit` 并入 `dbt-core`（同日晚于修复完成）
+
+审查后做的仓库粒度复核，结论是 11 仓里有 1 个越界：
+
+| 判断维度 | 事实 |
+|---|---|
+| 源码 / 骨架 | 142 行代码 vs 151 行骨架（pyproject 23 + README 23 + tests 105） |
+| 死代码 | `store_root` / `instance_id_of` / `tool_names` / `register_all` **四个函数零调用** |
+| 独立场景 | 无。它只是 `dbcore.protocol` 的 MCP 适配层，且已 `from dbcore import logging_setup` |
+| 隐性成本 | pyproject 硬依赖 `dbt-store` —— **每个 MCP 都被间接绑上 store**，与"按需安装"相悖 |
+
+处理：
+
+- 三个在用的函数（`make_server` / `wrap` / `register`）移入 `dbcore/mcp_kit.py`，死代码删除。
+- `import mcp` 改为**函数内延迟导入**，依赖声明挪到 `dbt-core[mcp]` extra ——
+  纯库调用方（如只要 SQL 解析/连库）不必装 MCP SDK。
+- 各 MCP 依赖从 `dbt-core + dbt-store + dbt-mcp-kit` 收敛为 `dbt-core[mcp] + dbt-store`。
+- **P2-6 顺带修掉**：非 Result 分支的 `took_ms` 改用真实耗时；
+  `fail()` 新增 `code` 参数并对非 ToolError 补 `detail.type`，
+  MCP 外壳兜底统一走 `E_QUERY`（原来同一类异常会出现 `E_ARGS` / `E_QUERY` 两码，
+  会让"代码崩了"看起来像"用户传错参数"）。
+- kit 套件 12 项 → 并入 `dbt-core/tests/test_mcp_kit.py`，新增"兜底码必须是 E_QUERY"断言，共 14 项。
+
+判断标准已写进 `ARCHITECTURE.md` §1.1 第 4 条：**骨架行数 ≥ 源码行数时，不单独成仓**。
+这是防止以后继续拆出同类空壳包的硬门槛。
 
 ### 未修（等你定标准）
 

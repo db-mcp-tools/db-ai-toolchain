@@ -26,7 +26,7 @@ install-all:
 	$(PY) scripts/dev-install.py --all --with-deps
 
 tree:
-	@for d in dbt-core dbt-store dbt-know dbt-mcp-kit mcp-sql-review mcp-change-risk \
+	@for d in dbt-core dbt-store dbt-know mcp-sql-review mcp-change-risk \
 	          mcp-dbwatch mcp-migration-diff mcp-data-semantics mcp-profile-hub dbt-orchestrator; do \
 	  n=$$(cat $$d/src/*/*.py 2>/dev/null | wc -l); \
 	  t=$$(cat $$d/tests/*.py 2>/dev/null | wc -l); \

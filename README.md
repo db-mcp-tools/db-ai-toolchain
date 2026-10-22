@@ -9,10 +9,9 @@
 
 | 仓库 | 类型 | 规模 | 干什么 |
 |---|---|---|---|
-| [`dbt-core`](dbt-core/) | 库 | 9 模块 | 协议信封 / 方言归一 / SQL 指纹 / 只读连库 / AST / 执行计划归一 |
+| [`dbt-core`](dbt-core/) | 库 | 10 模块 | 协议信封 / 方言归一 / SQL 指纹 / 只读连库 / AST / 执行计划归一 / **MCP 运行时外壳** |
 | [`dbt-store`](dbt-store/) | 库 | 1 模块 | 统一档案存储（SQLite，零依赖）—— 所有 MCP 的唯一数据落点 |
 | [`dbt-know`](dbt-know/) | 库 | 3 模块 | 引擎阈值 / 指标字典 / 18 种故障指纹（零依赖，Tier0 的来源） |
-| [`dbt-mcp-kit`](dbt-mcp-kit/) | 库 | 1 模块 | MCP 运行时外壳（SDK 1.x/2.x 兼容、异常转信封） |
 | [`mcp-sql-review`](mcp-sql-review/) | **MCP** | 14 工具 | SQL 静态体检 → 修法 → 验证 → 计划对比 → 索引建议 |
 | [`mcp-change-risk`](mcp-change-risk/) | **MCP** | 13 工具 | 变更风险因子模型 + 执行状态机（预检/干跑/灰度/回滚） |
 | [`mcp-dbwatch`](mcp-dbwatch/) | **MCP** | 15 工具 | DBA 值守：快照 → 定级 → 根因 → 健康分 → 事故报告 |
@@ -21,7 +20,7 @@
 | [`mcp-profile-hub`](mcp-profile-hub/) | **MCP** | 25 工具 | 档案中枢：实例档案 / 分位数基线 / 技术债账本 / 知识包 |
 | [`dbt-orchestrator`](dbt-orchestrator/) | 可选 | — | 跨 MCP 编排（按 `next_actions` 追链 + recipe）。**要装齐 6 个 MCP** |
 
-合计 **6 个 MCP / 92 个工具**，共享库 4 个。
+合计 **6 个 MCP / 92 个工具**，共享库 3 个。装任意一个 MCP，只会带上 `dbt-core`（含 MCP 外壳）、`dbt-store`，需要历史数据的再带 `dbt-know`。
 
 ## 按需安装：你只需要装你用的
 
@@ -36,28 +35,28 @@
 | 想一键跑「体检→修法→评估」整条链 | 6 个 MCP + `dbt-orchestrator` | — |
 
 ```bash
-pip install ./mcp-sql-review              # 一个 MCP + 它需要的 3 个共享库
+pip install ./mcp-sql-review              # 一个 MCP + 它需要的 2 个共享库
 pip install "./mcp-dbwatch[mysql]"        # 需要连 MySQL 时补驱动
 ```
+
+单独的 `dbt-core` 不含 MCP SDK —— 只做 SQL 解析/连库/协议时不用装它。
+要写 MCP 服务端时才装 `dbt-core[mcp]`（各 MCP 仓已自带这个 extra）。
 
 ## 依赖图（实线 = 安装依赖，虚线 = 只在结果里声明下一步）
 
 ```
-              ┌────────────┐   ┌────────────┐   ┌────────────┐
-              │ dbt-core   │   │ dbt-store  │   │ dbt-know   │
-              │ 协议/方言/AST│   │ 档案存储    │   │ 引擎知识    │
-              └─────┬──────┘   └─────┬──────┘   └─────┬──────┘
-                    │                │                │
-              ┌─────┴────────────────┴────────────────┴──────┐
-              │                dbt-mcp-kit                   │
-              └──┬────────┬────────┬────────┬────────┬───────┘
-                 │        │        │        │        │
-           sql-review  change-risk  dbwatch  migration  semantics  profile-hub
-                 ┆        ┆        ┆        ┆        ┆        ┆
-                 └────────┴────────┴────────┴────────┴────────┘
-                          next_actions（协议层，非 import）
-                                     │
-                            dbt-orchestrator（可选）
+        ┌──────────────┐   ┌────────────┐   ┌────────────┐
+        │ dbt-core     │   │ dbt-store  │   │ dbt-know   │
+        │ 协议/方言/AST │   │ 档案存储    │   │ 引擎知识    │
+        │ +MCP 运行时外壳│  │            │   │            │
+        └──┬───────┬───┴───┬───────┬────┴───┬───────┬────┘
+           │       │       │       │        │       │
+      sql-review change-risk dbwatch migration semantics profile-hub
+           ┆       ┆       ┆       ┆        ┆       ┆
+           └───────┴───────┴───────┴────────┴───────┘
+                    next_actions（协议层，非 import）
+                               │
+                    dbt-orchestrator（可选）
 ```
 
 **硬约束**：任何 MCP 的源码里都不出现 `from sql_review import ...` 这类跨 MCP import。

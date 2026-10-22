@@ -18,7 +18,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
-LIBS = ["dbt-core", "dbt-store", "dbt-know", "dbt-mcp-kit"]
+LIBS = ["dbt-core", "dbt-store", "dbt-know"]
 MCPS = {
     "sql-review": "mcp-sql-review",
     "change-risk": "mcp-change-risk",

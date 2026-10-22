@@ -2,14 +2,14 @@
 
 ## 结构
 
-11 个可独立安装的仓：4 个共享库（`dbt-core` / `dbt-store` / `dbt-know` / `dbt-mcp-kit`）
+10 个可独立安装的仓：3 个共享库（`dbt-core` / `dbt-store` / `dbt-know`）
 + 6 个 MCP（`mcp-*`）+ 1 个可选编排器。顶层只放文档、脚本、集成测试。
 
 ## 四条不可违反
 
 1. **MCP 之间不许互相 import**。需要别的能力时写进 `next_actions`，不写 `from xxx import`。
    改完跑 `python scripts/check-boundaries.py`，必须 0 违规。
-2. **共享库不许知道业务**。`dbt-core` / `dbt-store` / `dbt-know` / `dbt-mcp-kit`
+2. **共享库不许知道业务**。`dbt-core` / `dbt-store` / `dbt-know`
    里不许出现任何 MCP 的包名。
 3. **只有 `dbt-store` 能碰数据库文件**。除它之外任何仓不得自建存储、不得自己开 sqlite 连接。
 4. **每个工具必须返回 `dbcore.protocol.Result`**。禁止直接返回裸 dict。
