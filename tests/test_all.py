@@ -501,6 +501,141 @@ for fn, kwargs in (
 check("异常输入全部返回合法信封或明确报错", _robust == 12, f"{_robust}/12")
 
 # ==================================================================
+section("11. 编排层 orchestrator（跨 MCP 追链）")
+# ==================================================================
+from orchestrator.engine import Orchestrator  # noqa: E402
+from orchestrator.registry import build_registry  # noqa: E402
+
+_reg = build_registry()
+check("注册表覆盖全部 85 个 (mcp,tool)", len(_reg.by_mcp_tool) == _total_tools, str(len(_reg.by_mcp_tool)))
+check("按 (mcp,tool) 解析 review_sql", _reg.resolve("sql-review", "review_sql") is not None)
+check("按纯工具名解析 review_sql", _reg.resolve(None, "review_sql") is not None)
+# 全局唯一名若跨 MCP 重名，必须被标记为歧义（强制调用方显式指定 mcp）
+check("歧义工具名已标记", len(_reg.ambiguous) == _total_tools - len(_reg.names()),
+      f"{_reg.ambiguous}")
+try:
+    _reg.resolve(None, "不存在的工具_xyz")
+    check("未知工具应抛错", False)
+except KeyError:
+    check("未知工具应抛错", True)
+
+# 自动追链：体检 ->（自动）suggest_fixes
+_och = Orchestrator(registry=_reg, max_steps=30)
+_tr = _och.run("sql-review", "review_sql",
+               {"sql": "SELECT * FROM t WHERE 1=1 ORDER BY RAND() LIMIT 1000",
+                "dialect": "mysql"})
+check("追链至少跑两步（review_sql + suggest_fixes）", len(_tr.steps) >= 2, str(len(_tr.steps)))
+check("correlation_id 被产出并透传", bool(_tr.correlation_id))
+# 每一步的 correlation_id 参数应等于链路级 ID
+_chain_cid = all(
+    (s.result and s.result.correlation_id == _tr.correlation_id)
+    for s in _tr.steps if s.result
+)
+check("correlation_id 沿链路透传到底", _chain_cid)
+check("review_sql 与 suggest_fixes 都被执行",
+      {s.tool for s in _tr.steps} >= {"review_sql", "suggest_fixes"})
+
+# 防环：开 follow_optional 也不应超过 max_steps
+_och2 = Orchestrator(registry=_reg, max_steps=40, follow_optional=True)
+_tr2 = _och2.run("sql-review", "review_sql",
+                 {"sql": "SELECT * FROM orders ORDER BY id LIMIT 10 OFFSET 50000",
+                  "dialect": "mysql"})
+check("follow_optional 不失控（步数受 max_steps 约束）",
+      len(_tr2.steps) <= 40, str(len(_tr2.steps)))
+
+# 跨 MCP：review_sql 的后续里出现 change-risk.assess_change
+_cross = {f"{s.mcp}.{s.tool}" for s in _tr2.steps}
+check("跨 MCP 链路出现 change-risk.assess_change",
+      "change-risk.assess_change" in _cross, str(sorted(_cross)))
+
+# 优雅失败：缺必填参数的后续不应抛异常，而是标 E_ARGS
+_precheck = [s for s in _tr2.steps if s.tool == "precheck_change_window"]
+check("precheck_change_window 因缺 url 被标为 E_ARGS 而非崩溃",
+      any(s.error_code == "E_ARGS" for s in _precheck), str([s.error_code for s in _precheck]))
+
+# recipe 模式：确定性流水线，按给定顺序执行，不自动追 next_actions
+_recipe = Orchestrator(registry=_reg, max_steps=10)
+_tr3 = _recipe.run_recipe([
+    {"mcp": "sql-review", "tool": "review_sql",
+     "args": {"sql": "SELECT * FROM t", "dialect": "mysql"}},
+    {"mcp": "sql-review", "tool": "suggest_fixes",
+     "args": {"sql": "SELECT * FROM t", "dialect": "mysql"}},
+])
+check("recipe 按声明顺序执行 2 步", len(_tr3.steps) == 2, str(len(_tr3.steps)))
+check("recipe 不自动追 next_actions（步数不膨胀）", len(_tr3.steps) == 2)
+
+# ==================================================================
+section("12. 规则分册 rulebook（§9 实现端：拆分 + 启停）")
+# ==================================================================
+from dbcore.rulebook.registry import build as _build_rules  # noqa: E402
+from dbcore.rulebook.review import review_sql as _rb_review  # noqa: E402
+from dbcore.rulebook.profiles import PROFILES  # noqa: E402
+
+_rb = _build_rules()
+check("规则注册表含全部规则（>=30）", _rb.rule_count() >= 30, str(_rb.rule_count()))
+check("规则元数据 + PARSE000 齐备（>=30）", len(_rb.meta_map()) >= 30, str(len(_rb.meta_map())))
+# 每条规则必须有 why 与 false_positive（质量约束 §9.4）
+_missing = [rid for rid, m in _rb.meta_map().items() if rid != "PARSE000"
+             and (not m.get("why") or not m.get("false_positive"))]
+check("每条规则都有 why 与 false_positive", not _missing, str(_missing))
+
+# 方言过滤：PG001 只在 postgres 系生效
+_pg_mysql = {r.rule_id for r in _rb.filtered(dialect="mysql")}
+_pg_pg = {r.rule_id for r in _rb.filtered(dialect="postgres")}
+check("PG001 在 mysql 下被方言过滤掉", "PG001" not in _pg_mysql)
+check("PG001 在 postgres 下生效", "PG001" in _pg_pg)
+check("MY001 在 postgres 下被方言过滤掉", "MY001" not in _pg_pg)
+
+# profile：lenient 只看 blocker+high
+_lenient_ids = {r.rule_id for r in _rb.filtered(severities=["blocker", "high"])}
+check("lenient profile 不含 low 级规则（SEL001）", "SEL001" not in _lenient_ids)
+check("lenient profile 保留 high 级规则（SEL004）", "SEL004" in _lenient_ids)
+
+# disable / enable 优先级
+_dis = {r.rule_id for r in _rb.filtered(exclude=["SEL001"])}
+check("exclude 能禁用单条规则（SEL001）", "SEL001" not in _dis)
+_en = {r.rule_id for r in _rb.filtered(severities=["blocker", "high"], include=["SEL001"])}
+check("include 能顶回被 profile 过滤的规则（SEL001）", "SEL001" in _en)
+
+# 默认体检行为不变（回归）：SELECT * + RAND 命中 SEL001/SEL004
+_rdefault = _rb_review("SELECT * FROM t WHERE 1=1 ORDER BY RAND() LIMIT 5", "mysql")
+_rb_ids = {f.rule_id for f in _rdefault.findings}
+check("默认体检仍命中 SEL001（SELECT *）", "SEL001" in _rb_ids, str(sorted(_rb_ids)))
+check("默认体检仍命中 SEL004（ORDER BY RAND）", "SEL004" in _rb_ids, str(sorted(_rb_ids)))
+
+# profile 接入 review 入口
+_rlen = _rb_review("SELECT * FROM t WHERE 1=1 ORDER BY RAND() LIMIT 5", "mysql", profile="lenient")
+check("review 入口套用 lenient 后不再报 SEL001", "SEL001" not in {f.rule_id for f in _rlen.findings})
+
+# 1:1 拆分校验：每个 rule_id 唯一，且引擎专属规则的 engines 与 category 自洽
+_dup = [rid for rid in _rb.meta_map() if rid != "PARSE000"
+        and sum(1 for r in _rb.all() if r.rule_id == rid) != 1]
+check("每个 rule_id 在注册表中唯一（已做 1:1 拆分）", not _dup, str(_dup))
+for r in _rb.all():
+    if r.is_engine_specific:
+        check(f"{r.rule_id} 的 engines 与 category 自洽",
+              r.category in ("postgres", "mysql", "subquery"), r.category)
+
+# profile 字典可解析
+for _pn in PROFILES:
+    check(f"profile {_pn} 可被 resolve", True)
+
+# 严重度一致性：每条规则的 _mk 严重度必须与 META 严重度一致（否则过滤与展示会打架）
+import inspect as _inspect  # noqa: E402
+import re as _re  # noqa: E402
+_mismatch = []
+for _mod_name in ("select", "dml", "type", "tx", "engine", "subquery"):
+    _mod = __import__(f"dbcore.rulebook.{_mod_name}", fromlist=["META", "RULES"])
+    for _rid, _fn in _mod.RULES:
+        for _mm in _re.finditer(r"_mk\(\s*['\"]([A-Z0-9]+)['\"]\s*,\s*['\"]([a-z]+)['\"]",
+                                _inspect.getsource(_fn)):
+            _r2, _sev = _mm.group(1), _mm.group(2)
+            _ms = _mod.META.get(_r2, {}).get("severity")
+            if _ms and _ms != _sev:
+                _mismatch.append(f"{_r2}:_mk={_sev},meta={_ms}")
+check("每条规则的 _mk 严重度与 META 一致", not _mismatch, str(_mismatch))
+
+# ==================================================================
 print("\n" + "=" * 60)
 print(f"通过 {len(PASSED)} 项，失败 {len(FAILED)} 项")
 if FAILED:

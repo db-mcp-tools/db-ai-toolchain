@@ -18,6 +18,8 @@
     dbt migrate --to postgres oracle.sql            # 迁移差异检查
     dbt semantics --compare a.sql b.sql             # 口径比对
     dbt profile --stats                             # 档案库概况
+    dbt run --seed sql-review.review_sql --sql "SELECT ..."   # 跨 MCP 自动追链
+    dbt run --recipe orchestrator/examples/safe_change.json   # 确定性流水线
     dbt tools                                       # 列出所有 MCP 与工具
 """
 
@@ -102,7 +104,8 @@ def cmd_review(args) -> int:
         r = SR.review_file(args.file, dialect=args.dialect, fail_on=args.fail_on)
     elif args.sql:
         r = SR.review_sql(" ".join(args.sql), dialect=args.dialect,
-                          table_rows=args.rows)
+                          table_rows=args.rows, profile=args.profile,
+                          disable=args.disable, enable=args.enable)
     else:
         print("需要 --sql / --file / --dir / --diff 之一", file=sys.stderr)
         return 2
@@ -219,6 +222,37 @@ def cmd_profile(args) -> int:
     return 0
 
 
+def cmd_run(args) -> int:
+    """跨 MCP 编排：把剩余参数转交给 orchestrator 引擎执行。"""
+    from orchestrator.__main__ import main as orch_main
+
+    argv: list[str] = []
+    if args.recipe:
+        argv += ["--recipe", args.recipe]
+    else:
+        if not args.seed:
+            print("需要 --seed MCP.tool 或 --recipe", file=sys.stderr)
+            return 2
+        argv += ["--seed", args.seed]
+        if args.sql is not None:
+            argv += ["--sql", args.sql]
+        argv += ["--dialect", args.dialect]
+        for kv in args.arg:
+            argv += ["--arg", kv]
+        if args.follow_optional:
+            argv += ["--follow-optional"]
+        if args.correlation_id:
+            argv += ["--correlation-id", args.correlation_id]
+        if args.instance_id:
+            argv += ["--instance-id", args.instance_id]
+        argv += ["--max-steps", str(args.max_steps)]
+        if args.title:
+            argv += ["--title", args.title]
+    if args.json:
+        argv += ["--json"]
+    return orch_main(argv)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="dbt", description="db-ai-toolchain CLI")
     p.add_argument("--json", action="store_true", help="输出原始 JSON 信封")
@@ -236,6 +270,12 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--rows", type=int, default=None, help="表行数（提升风险判定准确度）")
     r.add_argument("--fail-on", default="critical",
                    choices=["critical", "high", "medium", "low"])
+    r.add_argument("--profile", default="default",
+                   help="规则配置：default / lenient / ci-gate / bank-core")
+    r.add_argument("--disable", nargs="*", default=None,
+                   help="本次禁用的规则 ID，例如 --disable SEL001 DML004")
+    r.add_argument("--enable", nargs="*", default=None,
+                   help="本次强制启用的规则 ID（优先级最高）")
     r.set_defaults(func=cmd_review)
 
     f = sub.add_parser("fix", help="给出修法")
@@ -289,6 +329,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     t = sub.add_parser("tools", help="列出所有 MCP 与工具")
     t.set_defaults(func=cmd_tools)
+
+    rn = sub.add_parser("run", help="跨 MCP 编排（自动追 next_actions）")
+    rn.add_argument("--seed", help="入口工具，形如 mcp.tool 或纯 tool 名")
+    rn.add_argument("--arg", action="append", default=[], metavar="k=v",
+                    help="传给入口工具的参数，可重复")
+    rn.add_argument("--sql", help="便捷参数：等价于 --arg sql=...")
+    rn.add_argument("--dialect", default="mysql")
+    rn.add_argument("--follow-optional", action="store_true",
+                    help="连「可选」的 next_actions 也一并追")
+    rn.add_argument("--recipe", help="确定性流水线文件路径（JSON/YAML 列表）")
+    rn.add_argument("--correlation-id", default="", help="复用已有关联 ID")
+    rn.add_argument("--instance-id", default="", help="实例 ID（用于串档案）")
+    rn.add_argument("--max-steps", type=int, default=50)
+    rn.add_argument("--title", default="编排执行报告")
+    rn.add_argument("--json", action="store_true", help="输出 trace 的 JSON")
+    rn.set_defaults(func=cmd_run)
     return p
 
 

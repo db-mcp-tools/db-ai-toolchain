@@ -55,11 +55,28 @@ def _columns(ast: exp.Expression) -> list[dict]:
 
 
 def _row(ast: exp.Expression) -> dict | None:
-    limit_node = ast.args.get("limit") if isinstance(ast, exp.Select) else None
-    if limit_node is None:
+    """提取 LIMIT / OFFSET 的数值（做深分页检测用）。
+
+    sqlglot 的 Limit / Offset 节点把数值放在 expression 参数里。
+    """
+    limit_node = ast.find(exp.Limit) if hasattr(ast, "find") else None
+    offset_node = ast.find(exp.Offset) if hasattr(ast, "find") else None
+    if limit_node is None and offset_node is None:
         return None
-    from dbcore.dialect import limit_value, offset_value  # 局部导入避免循环
-    return {"limit": limit_value(ast), "offset": offset_value(ast)}
+    out: dict = {}
+    if limit_node is not None:
+        v = limit_node.args.get("expression")
+        if isinstance(v, exp.Literal) and v.is_int:
+            out["limit"] = int(v.this)
+        else:
+            out["limit"] = None
+    if offset_node is not None:
+        v = offset_node.args.get("expression")
+        if isinstance(v, exp.Literal) and v.is_int:
+            out["offset"] = int(v.this)
+        else:
+            out["offset"] = None
+    return out
 
 
 def _funcs_on_columns(ast: exp.Expression) -> list[dict]:

@@ -1,0 +1,35 @@
+[
+  {
+    "mcp": "sql-review",
+    "tool": "review_sql",
+    "args": {
+      "sql": "SELECT * FROM orders WHERE status = 1 ORDER BY RAND() LIMIT 1000",
+      "dialect": "mysql"
+    }
+  },
+  {
+    "mcp": "sql-review",
+    "tool": "suggest_fixes",
+    "args": {
+      "sql": "SELECT * FROM orders WHERE status = 1 ORDER BY RAND() LIMIT 1000",
+      "dialect": "mysql"
+    }
+  },
+  {
+    "mcp": "sql-review",
+    "tool": "verify_fix",
+    "args": {
+      "original_sql": "SELECT * FROM orders WHERE status = 1 ORDER BY RAND() LIMIT 1000",
+      "fixed_sql": "SELECT id, status FROM orders WHERE status = 1 ORDER BY id LIMIT 1000",
+      "dialect": "mysql"
+    }
+  },
+  {
+    "mcp": "change-risk",
+    "tool": "assess_change",
+    "args": {
+      "sql": "CREATE INDEX ix_orders_status ON orders(status)",
+      "dialect": "mysql"
+    }
+  }
+]

@@ -11,9 +11,13 @@ python -m venv .venv && .venv/Scripts/python -m pip install -r requirements.txt
 python tests/test_all.py
 
 # CLI
-python cli/dbt.py tools                 # 列出全部 85 个工具
+python cli/dbt.py tools                 # 列出全部 86 个工具
 python cli/dbt.py review "SELECT * FROM a, b"
 python cli/dbt.py watch 主从延迟突增     # 零历史也能用
+
+# 编排：按 next_actions 自动串起跨 MCP 链路
+python cli/dbt.py run --seed sql-review.review_sql --sql "SELECT * FROM t ORDER BY RAND() LIMIT 1000"
+python cli/dbt.py run --recipe orchestrator/examples/safe_change.json   # 确定性流水线
 ```
 
 ---
@@ -44,7 +48,7 @@ db-ai-toolchain/
 │   └── report.py          报告渲染
 │
 ├── servers/               一个 MCP 一个文件夹，可独立发版
-│   ├── sql-review/        14 工具  体检 → 修正 → 验证
+│   ├── sql-review/        15 工具  体检 → 修正 → 验证（支持 profile / 规则启停）
 │   ├── change-risk/       13 工具  风险 → dry-run → 灰度 → 回滚 → 留痕
 │   ├── dbwatch/           15 工具  值守 + 根因（Tier0 可用）
 │   ├── migration-diff/    12 工具  国产化迁移正确性验证
@@ -69,7 +73,7 @@ db-ai-toolchain/
 | **data-semantics** | 13 | 口径结构化 → 结构化 diff → 逐层下钻 → 契约固化 |
 | **profile-hub** | 18 | 所有 MCP 的唯一数据落点 + 知识包导入导出 |
 
-合计 **85 个工具**。完整清单见 `DESIGN.md §3`。
+合计 **86 个工具**。完整清单见 `DESIGN.md §3`。
 
 ---
 
@@ -183,8 +187,8 @@ python cli/dbt.py review --file src/main/resources/mapper/OrderMapper.xml
 
 ## 路线图
 
-- [x] 内核 + 6 个 MCP + CLI + 143 项测试
-- [ ] 编排层（`orchestrator/`）：按 `next_actions` 自动串起跨 MCP 链路
-- [ ] 规则分册（rulebook/）按场景拆分，支持按方言/严重度启停
+- [x] 内核 + 6 个 MCP + CLI + 179 项测试
+- [x] 编排层（`orchestrator/`）：按 `next_actions` 自动串起跨 MCP 链路（自动追链 + recipe 两种驱动）
+- [x] 规则分册（`rulebook/`）：按场景拆成 6 个分册 + 单一注册表，支持按方言/分类/严重度/显式名单启停（profile：default/lenient/ci-gate/bank-core）
 - [ ] 知识包市场：同行业匿名基线包
 - [ ] 报告模板（Word/PDF）与客户门户

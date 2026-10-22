@@ -200,7 +200,7 @@ change_state: draft | prechecked | dryrun | shadow | canary | applied | rolled_b
 
 图例：`◎` = 不需要连库（冷启动可用） · `●` = 需要连库 · `◆` = 需要先 bootstrap
 
-### 3.1 `sql-review` — SQL 体检与修正（14 工具）
+### 3.1 `sql-review` — SQL 体检与修正（15 工具）
 
 > 闭环：**发现问题 → 给出修法 → 复验证明改对了**
 
@@ -220,6 +220,7 @@ change_state: draft | prechecked | dryrun | shadow | canary | applied | rolled_b
 | `fingerprint_sql` | ◎ | sql | sql_fingerprint + 归一化 SQL | 交互口 |
 | `list_rules` | ◎ | category?, dialect? | 规则清单与开关状态 | 元工具 |
 | `explain_rule` | ◎ | rule_id | 规则原理、误报场景、修法 | 元工具 |
+| `list_profiles` | ◎ | — | 可用 profile + 全部规则 ID（配合 disable/enable） | 元工具 |
 
 ### 3.2 `change-risk` — 变更执行护栏（13 工具）
 
@@ -244,7 +245,7 @@ change_state: draft | prechecked | dryrun | shadow | canary | applied | rolled_b
 `execution.py` 里的状态机：`draft → prechecked → dryrun → shadow → canary → applied`，任一环节可 `aborted/rolled_back`。
 **每次状态迁移写 profile-hub 审计表**，这是合规和责任划分的依据。
 
-### 3.3 `dbwatch` — DBA 值守与根因报告（14 工具）
+### 3.3 `dbwatch` — DBA 值守与根因报告（15 工具）
 
 > **Tier0 必须可用**（见 §0.2）。即使客户今天第一次接入，也要能出一份报告。
 
@@ -370,6 +371,111 @@ Oracle/MySQL → PG / 达梦 / OceanBase / GaussDB / Kingbase。
 
 ## 7. 版本与发布
 
-- `packages/dbcore` 版本号与仓rosis版本一致，语义化版本。
+- `packages/dbcore` 版本号与仓库版本一致，语义化版本。
 - 每个 `servers/<name>/` 独立 `README.md` + `__main__.py`，可 `python -m servers.<name>` 启动。
+
+---
+
+## 8. 编排层 orchestrator（§4.3 的运行端）
+
+`next_actions` 是留给多 Agent 编排的合同，但合同需要运行端。`orchestrator/` 就是这份合同的执行引擎，
+**不为每一对 MCP 写胶水代码**。
+
+### 8.1 两种驱动
+
+- **自动追链 `run(mcp, tool, args)`**：给一个入口工具，引擎照着返回的 `next_actions` 自动跑下去。
+  `optional=True` 的后续默认不追（`--follow-optional` 才追）。幂等收敛：同一 `(mcp, tool, args)`
+  不重复执行；全局步数有上限，杜绝 `next_actions` 环导致的死循环。
+- **配方 `run_recipe([...])`**：一份显式的、确定性的跨 MCP 流水线（JSON/YAML 列表），
+  按给定顺序执行、**不**自动追 `next_actions`。适合 CI / 受控变更这类要可复现、可审计的场景。
+
+### 8.2 引擎职责（与协议对齐）
+
+- **关联透传**：一次 `run` 生成唯一 `correlation_id`，沿整条链路注入到每一步的调用参数；
+  `instance_id`（实例）与 `sql_fingerprint`（SQL）同理透传，保证档案/记忆能串回同一调用链。
+- **失败隔离**：某一步抛异常或返回 `ok=false` 只标记该步，不拖垮整条链，且不追它的 `next_actions`。
+- **护栏不下放**：受控变更类工具（dry_run / apply）是否真执行，由调用方显式决定（recipe 里写明 / `--follow-optional`）；
+  引擎本身不替业务拍板「要不要真改库」。缺必填参数（如 `precheck_change_window` 的 `url`）给出干净的
+  `E_ARGS` 失败，而不是 TypeError 堆栈。
+- **注册表单一事实来源**：`orchestrator/registry.py` 直接复用各 server 模块的 `TOOLS` 字典，
+  保证编排层能调到的工具与 MCP 暴露的工具完全一致。
+
+### 8.3 命令行
+
+```bash
+dbt run --seed sql-review.review_sql --sql "SELECT * FROM t ORDER BY RAND() LIMIT 1000" --dialect mysql
+dbt run --seed sql-review.review_sql --sql "..." --follow-optional      # 连可选后续也追
+dbt run --recipe orchestrator/examples/safe_change.json                # 确定性流水线
+dbt run --seed ... --json                                              # 仅输出 trace JSON
+python -m orchestrator --seed ...                                      # 也可直接跑引擎
+```
+
+### 8.4 已知约定约束
+
+- 工具名全局唯一；若出现跨 MCP 重名（如 `list_metrics` / `record_observation`），调用时必须显式带 `mcp=<全称>`，
+  注册表会将其标记为歧义，强制消歧。
+- `next_actions` 的参数必须是自包含的（工具自己把 `sql`/`dialect` 等字面量带进 `args`），
+  编排层不做跨步参数引用替换——保持"工具对自己产出的后续负责"的简单契约。
 - 单 MCP 独立发版时，用 git subtree split，保持 dilivery 粒度。
+
+---
+
+## 9. 规则分册 rulebook（§5 的实现端）
+
+§5 只定义了规则 ID 命名与分册设想，本章把它落到代码：`packages/dbcore/rulebook/`。
+目标——**规则可治理**：拆成场景分册 + 单一注册表 + 按方言/分类/严重度/显式名单启停。
+
+### 9.1 目录与职责
+
+```
+packages/dbcore/rulebook/
+  core.py        共享基础设施：SEVERITY_ORDER / Finding / ReviewResult / RuleFn /
+                _mk / _dedup_findings / _eq_pairs / _literal_of / _NUMERIC_COL_RE
+  select.py     SEL* JOIN* AGG* ORDER* PART*（查询结构与结果集风险）
+  dml.py        DML* INS* DDL* LOCK*（写操作与结构变更风险）
+  type.py       TYPE* NULL*（类型与 NULL 语义）
+  tx.py         TX*（事务/锁边界）
+  engine.py     MY* PG* ORA*（引擎专属）
+  subquery.py   SUBQ*（子查询风险）
+  registry.py   Rule 数据类 + RuleRegistry：add / all / get / filtered
+  profiles.py   命名配置：default / lenient / ci-gate（确定性、可审计）
+  review.py     review_sql(sql, dialect, profile, disable, enable, only_*) → ReviewResult
+  __init__.py   再导出，兼容旧 import 路径
+```
+
+`packages/dbcore/rules.py` 退化为薄壳：`from dbcore.rulebook import *` 并补齐
+`RULES` / `RULE_META` 两个历史导出名，保证 `fix.py`、`__init__.py`、既有测试零改动。
+
+### 9.2 注册表与启停语义
+
+`Rule(rule_id, name, category, severity, fn, why, false_positive, engines)`。`engines` 为空表示该规则方言无关；
+非空（如 `["postgres","gaussdb","kingbase"]`）表示**仅对这些方言生效**。
+
+`RuleRegistry.filtered(dialect=, categories=, severities=, include=, exclude=)` 的归并规则：
+
+1. `engines` 过滤：规则 `engines` 非空且 `dialect` 不在其中 → 直接跳过（如 `PG001` 在 mysql 下不触发）。
+2. `categories`：非空则只保留该分类的规则。
+3. `severities`：非空则只保留该严重度的规则（用于 `lenient` / `ci-gate` 只看 blocker+high）。
+4. `exclude`：显式名单最后剔除（团队已确认接受的写法，如 `DML004` REPLACE INTO）。
+5. `include`：显式名单最后强制保留（即便被 1~4 过滤掉也留着）。
+
+`include`/`exclude` 优先级最高，可在工具层按需覆盖 profile 默认值。
+
+### 9.3 profile 与工具接口
+
+`profiles.py` 提供：`default`（全量，仅受 engines 过滤）、`lenient`（只看 blocker+high）、
+`ci-gate`（blocker+high，CI 门禁用）。未来可按客户加 `bank-core` / `saas-oltp` 等行业 profile。
+
+`sql_review` 的 `review_sql` 工具新增三个可选参数（默认值保持旧行为完全不变）：
+
+- `profile: str = "default"` —— 套用命名配置。
+- `disable: list[str] = []` —— 本次禁用规则（叠加在 profile 之上）。
+- `enable: list[str] = []` —— 本次强制启用规则。
+
+新增工具 `list_profiles` 枚举可用 profile 及其门禁说明。
+
+### 9.4 质量约束（沿用 §6）
+
+- 规则搬移不得改变任何既有规则的行为与严重度（157 项回归测试为铁证）。
+- 每条规则在注册时必须带 `why` 与 `false_positive`，缺失即 CI 失败。
+- `engines` 字段缺失默认视为"全方言"，但引擎专属规则（MY/PG/ORA）必须显式声明。

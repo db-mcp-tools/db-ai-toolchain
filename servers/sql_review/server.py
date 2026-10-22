@@ -55,13 +55,22 @@ _SEV_NOUN = {"critical": "blocker", "high": "high", "medium": "medium", "low": "
 
 def review_sql(sql: str, dialect: str = "mysql", table_rows: int | None = None,
                instance_id: str = "", correlation_id: str = "",
-               deep_offset_threshold: int = 1000) -> Result:
-    """静态体检。不需要连库，最适合挂 CI。返回 verdict + findings。"""
+               deep_offset_threshold: int = 1000, profile: str = "default",
+               disable: list[str] | None = None, enable: list[str] | None = None) -> Result:
+    """静态体检。不需要连库，最适合挂 CI。返回 verdict + findings。
+
+    profile: 规则配置（default / lenient / ci-gate / bank-core），决定启用哪些规则。
+    disable: 本次额外禁用的规则 ID（叠加在 profile 之上，用于团队已确认的豁免写法）。
+    enable:  本次强制启用的规则 ID（优先级最高，即便被 profile 过滤也生效）。
+    """
     d = normalize_dialect(dialect)
     r = RULES.review_sql(sql, d, table_rows=table_rows,
-                         deep_offset_threshold=deep_offset_threshold)
+                         deep_offset_threshold=deep_offset_threshold,
+                         profile=profile, disable=disable, enable=enable)
     data = r.to_dict()
     data["findings"] = [{**f, "severity_norm": _norm_sev(f["severity"])} for f in data["findings"]]
+    data["profile"] = profile
+    data["disabled"] = list(disable or [])
     verdict, sev = _verdict_of(data["findings"])
     fp = sql_fingerprint(sql)
 
@@ -89,12 +98,18 @@ def review_sql(sql: str, dialect: str = "mysql", table_rows: int | None = None,
 
 
 def review_batch(sqls: list[str], dialect: str = "mysql", fail_on: str = "critical",
-                 instance_id: str = "", correlation_id: str = "") -> Result:
-    """批量体检，输出 PASS/FAIL 门禁结论。fail_on 可选 critical|high|medium|low"""
+                 instance_id: str = "", correlation_id: str = "",
+                 profile: str = "default", disable: list[str] | None = None,
+                 enable: list[str] | None = None) -> Result:
+    """批量体检，输出 PASS/FAIL 门禁结论。fail_on 可选 critical|high|medium|low
+
+    profile / disable / enable 透传给每条 SQL 的体检，便于在 CI 里按项目定制门禁。
+    """
     results = []
     for s in sqls:
         try:
-            dd = RULES.review_sql(s, dialect).to_dict()
+            dd = RULES.review_sql(s, dialect, profile=profile,
+                                  disable=disable, enable=enable).to_dict()
         except Exception as exc:
             dd = {"verdict": "unknown", "statement_count": 0, "unparsable": [s[:100]],
                   "findings": [{"rule_id": "PARSE000", "severity": "info", "line": None,
@@ -115,7 +130,8 @@ def review_batch(sqls: list[str], dialect: str = "mysql", fail_on: str = "critic
     res = Result(
         ok=True, mcp=MCP_NAME, tool="review_batch",
         data={"total": len(results), "failed": len(failed),
-              "gate": "PASS" if passed else "FAIL", "fail_on": fail_on, "items": results},
+              "gate": "PASS" if passed else "FAIL", "fail_on": fail_on,
+              "profile": profile, "items": results},
         verdict="pass" if passed else "fail", confidence="medium", tier="tier0",
         summary=f"共 {len(results)} 条，{len(failed)} 条未通过（阈值 {fail_on}）",
         instance_id=instance_id, correlation_id=correlation_id,
@@ -481,6 +497,30 @@ def explain_rule(rule_id: str, instance_id: str = "", correlation_id: str = "") 
     return r
 
 
+def list_profiles(instance_id: str = "", correlation_id: str = "") -> Result:
+    """枚举可用的规则 profile（规则启停配置），用于在 review / review_batch 里套用。
+
+    返回每个 profile 的门禁说明，以及当前注册的全部规则 ID，便于在 disable/enable 时对照。
+    """
+    from dbcore.rulebook import profiles
+    all_rules = sorted(RULES.RULE_META.keys())
+    data = {
+        "profiles": [
+            {"name": name, "description": profiles.PROFILE_DESCRIPTIONS.get(name, ""),
+             "config": profiles.PROFILES.get(name, {})}
+            for name in profiles.PROFILES
+        ],
+        "all_rule_ids": all_rules,
+        "total_rules": len(all_rules),
+    }
+    return Result(
+        ok=True, mcp=MCP_NAME, tool="list_profiles", data=data,
+        verdict="pass", confidence="high", tier="tier0",
+        summary=f"可用 profile：{', '.join(profiles.PROFILES)}；共 {len(all_rules)} 条规则可治理",
+        instance_id=instance_id, correlation_id=correlation_id,
+    )
+
+
 
 
 # ==================================================================
@@ -502,6 +542,7 @@ TOOLS = {
     "extract_objects": extract_objects,
     "list_rules": list_rules,
     "explain_rule": explain_rule,
+    "list_profiles": list_profiles,
 }
 
 for _name, _fn in TOOLS.items():
