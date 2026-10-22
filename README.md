@@ -17,10 +17,10 @@
 | [`mcp-dbwatch`](mcp-dbwatch/) | **MCP** | 15 工具 | DBA 值守：快照 → 定级 → 根因 → 健康分 → 事故报告 |
 | [`mcp-migration-diff`](mcp-migration-diff/) | **MCP** | 12 工具 | 国产化迁移：类型映射 → 语法 Gap → 校验方案 → 工作量 |
 | [`mcp-data-semantics`](mcp-data-semantics/) | **MCP** | 13 工具 | 数据口径治理：口径 diff → 扇出检测 → 下钻 → 契约固化 |
-| [`mcp-profile-hub`](mcp-profile-hub/) | **MCP** | 25 工具 | 档案中枢：实例档案 / 分位数基线 / 技术债账本 / 知识包 |
+| [`mcp-profile-hub`](mcp-profile-hub/) | **MCP** | 24 工具 | 档案中枢：实例档案 / 分位数基线 / 技术债账本 / 知识包 |
 | [`dbt-orchestrator`](dbt-orchestrator/) | 可选 | — | 跨 MCP 编排（按 `next_actions` 追链 + recipe）。**要装齐 6 个 MCP** |
 
-合计 **6 个 MCP / 92 个工具**，共享库 3 个。装任意一个 MCP，只会带上 `dbt-core`（含 MCP 外壳）、`dbt-store`，需要历史数据的再带 `dbt-know`。
+合计 **6 个 MCP / 91 个工具**，共享库 3 个。装任意一个 MCP，只会带上 `dbt-core`（含 MCP 外壳）、`dbt-store`，需要历史数据的再带 `dbt-know`。
 
 ## 按需安装：你只需要装你用的
 
