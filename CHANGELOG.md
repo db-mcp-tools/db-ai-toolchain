@@ -140,6 +140,27 @@
   设 `DBT_TEST_MYSQL_URL` / `DBT_TEST_POSTGRES_URL` 可额外验证真实 MySQL / Postgres 分支
   （让实际厂商路径"测试就绪"，待有实例即可跑）。
 
+### 评测基准与误报治理（P0：评测驱动优化）
+
+对照业界对这类工具的评测（SQLFlex 的 anti-pattern 级 F1、FSE 2026 的"lint 只查形式不查语义"、
+Yearning/SQLE/Bytebase 横向评测的"误报率"维度），新增**精度基准套件**把"误报治理"从定性变成可量化：
+
+- **`mcp-sql-review/bench/`**：标注语料 `corpus.py`（56 条样本，覆盖全部 37 条规则的正例 +
+  FP 陷阱 + 干净负例）+ 指标脚本 `run_bench.py`，以「规则 ID」为 anti-pattern 单元，
+  按 SQLFlex 口径算全局与每条规则的 Precision/Recall/F1（PARSE000 不计入）。
+  首次运行即 **全局 F1 = 1.000（TP 49 / FP 0 / FN 0）**。
+- 基准**当场抓到并修掉 4 个真实误报缺陷**（之前全靠静态单测，从没用标注集打过分）：
+  - **`SEL001` 把 `COUNT(*)` 误报成 `SELECT *`**：`rule_select_star` 用 `find_all(exp.Star)` 全盘扫描，
+    把聚合里的星号当成了投影星号。改为只认 SELECT 列表顶层星号（含 `t.*`）。
+  - **`MY001` 对 `MODIFY/CHANGE` 也误报"未指定 ALGORITHM"**：改列类型本就 COPY、INSTANT 不支持，
+    却误导。改为排除 `MODIFY` / `CHANGE` 列变更。
+  - **`SEL007` 对逗号 `FROM a,b` 重复报**：与 `JOIN002`/`JOIN001` 三连报同一笛卡尔积。
+    改为只认显式 JOIN 关键字（`INNER/LEFT JOIN`），逗号写法交给 `JOIN001`/`JOIN002`。
+  - **`TYPE001` 把 `dt='2024-01-01'` 误报成隐式类型转换**：`_DATE_LIKE_RE` 漏掉常见日期分区列 `dt`。
+    补充 `dt|ymd` 等日期列名特征。
+- 接入常驻门禁：`make bench`（`--fail-under 0.90 --max-fp 0`），并纳入 `make check`。
+  这把"误报率"变成每次提交都会回归的指标，对应评测界对这类工具的核心考量。
+
 ### 已知未做
 
 - `sqltk-store` 的连接复用（当前每次 `_conn()` 约 5ms，且每次都跑一遍建表 DDL）。

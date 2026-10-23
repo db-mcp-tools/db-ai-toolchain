@@ -8,7 +8,7 @@ PY ?= python
 INDEX ?=
 INDEX_ARG = $(if $(INDEX),--index-url $(INDEX))
 
-.PHONY: help test smoke boundaries check gen check-meta build verify publish-test publish \
+.PHONY: help test smoke boundaries check bench gen check-meta build verify publish-test publish \
         install install-all tree
 
 help:
@@ -16,7 +16,8 @@ help:
 	@echo "  make test          跑全部 12 个测试套件（逐套件报用例数）"
 	@echo "  make smoke         用真实 MCP 客户端挂载 6 个 server（需 mcp SDK）"
 	@echo "  make boundaries    检查跨 MCP 依赖（必须 0 违规）"
-	@echo "  make check         边界检查 + 全量测试 + 挂载冒烟"
+	@echo "  make check         边界检查 + 全量测试 + 挂载冒烟 + 精度基准"
+	@echo "  make bench         跑规则引擎精度基准（anti-pattern 级 P/R/F1，回归门禁）"
 	@echo "  make install       安装 mcp-sql-review 及其共享库"
 	@echo "  make install-all   安装全部 6 个 MCP + 编排器"
 	@echo "  make tree          打印仓库结构与规模"
@@ -38,7 +39,10 @@ smoke:
 boundaries:
 	$(PY) scripts/check-boundaries.py
 
-check: boundaries test smoke
+check: boundaries test smoke bench
+
+bench:
+	$(PY) mcp-sql-review/bench/run_bench.py --fail-under 0.90 --max-fp 0
 
 gen:
 	$(PY) scripts/gen-pyprojects.py
