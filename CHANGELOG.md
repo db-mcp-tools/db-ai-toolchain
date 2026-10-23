@@ -161,6 +161,20 @@ Yearning/SQLE/Bytebase 横向评测的"误报率"维度），新增**精度基�
 - 接入常驻门禁：`make bench`（`--fail-under 0.90 --max-fp 0`），并纳入 `make check`。
   这把"误报率"变成每次提交都会回归的指标，对应评测界对这类工具的核心考量。
 
+### 回滚语句生成（P1：评测必考点）
+
+Yearning/SQLE/Bytebase 的横向评测把"自动生成反向下发语句"列为变更审核必考点；
+此前 `run_in_transaction` 只做 `ROLLBACK`，不产出可移植的反向 DML。新增
+**`sqltk-core/src/dbcore/rollback.py`**，在事务内捕获前镜像并生成精确反向，**自身绝不修改目标库**：
+
+- **DELETE → 逐行 INSERT**（前镜像全列回写）
+- **UPDATE → 逐行 UPDATE**（被改列还原为前镜像旧值，全列等值定位）
+- **INSERT → DELETE WHERE**（基于字面量 VALUES 静态构造，不连库执行原语句）
+- DDL / 管理类语句由 `guard.unsafe_in_transaction` 拒绝，明确走影子表 / 备份方案。
+- 前镜像行数超过 `max_rows`（默认 5000）时拒绝生成，防巨型回滚脚本。
+- 新增 **`sqltk-core/tests/test_rollback.py`**（21 项，真实 SQLite 文件库端到端）：
+  覆盖三类反向、库未被改动、DDL 被拒、反向语句可执行、端到端还原；并接入 `make test` 套件。
+
 ### 已知未做
 
 - `sqltk-store` 的连接复用（当前每次 `_conn()` 约 5ms，且每次都跑一遍建表 DDL）。
