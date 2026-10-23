@@ -90,6 +90,25 @@ def missing_wheels() -> list[str]:
     return bad
 
 
+def stale_wheels() -> list[str]:
+    """dist 比源码旧 —— 验证旧产物等于没验证，还更容易误判"通过"。
+
+    判据：最新 wheel 的 mtime 要晚于该仓 src/ 下所有 .py 与 pyproject.toml。
+    """
+    stale = []
+    for repo in C.REPOS:
+        d = ROOT / repo["dir"]
+        wheels = list((d / "dist").glob("*.whl"))
+        if not wheels:
+            continue
+        newest_wheel = max(p.stat().st_mtime for p in wheels)
+        sources = list((d / "src").rglob("*.py")) + [d / "pyproject.toml", d / "README.md"]
+        newest_src = max((p.stat().st_mtime for p in sources if p.exists()), default=0)
+        if newest_src > newest_wheel:
+            stale.append(repo["name"])
+    return stale
+
+
 def installed(py: pathlib.Path, module: str) -> bool:
     r = run([str(py), "-c",
              f"import importlib.util as u, sys; sys.exit(0 if u.find_spec({module!r}) else 1)"])
@@ -191,6 +210,12 @@ def main() -> int:
     if bad:
         print("✗ 这些包还没有 dist/*.whl，先跑 make build：")
         print("  " + ", ".join(bad))
+        return 2
+
+    stale = stale_wheels()
+    if stale:
+        print("✗ 这些仓的 dist 比源码旧，验证的会是旧产物 —— 先跑 make build：")
+        print("  " + ", ".join(stale))
         return 2
 
     print(f"版本 {C.VERSION}｜Python {sys.version.split()[0]}\n")
