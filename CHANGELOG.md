@@ -108,8 +108,9 @@
   6 个 MCP 与编排器 3.10+（`mcp` SDK 自身的下限，3.9 上装不上）。
 - `scripts/publish.py` 按依赖拓扑序构建 / 上传，`twine check` 全过；
   `docs/PUBLISHING.md` 记录流程与坑。
-- 测试：12 个套件 / 322 项，`make check` 一条命令跑完，并逐套件报出用例数
-  （总数由 `scripts/test-all.py` 从各套件输出加总，不再手抄）。全部不依赖 pytest 与真实数据库。
+- 测试：13 个套件 / 355 项，`make check` 一条命令跑完，并逐套件报出用例数
+  （总数由 `scripts/test-all.py` 从各套件输出加总，不再手抄）。除真实库套件外均不依赖 pytest；
+  真实库套件用标准库 SQLite（零基础设施）端到端验证连接器公共路径。
 - **MCP 挂载冒烟** `scripts/smoke-mcp.py`：用真实 stdio 客户端把 6 个 server 各连一次，
   校验握手、工具数、每个工具的 `description` / `inputSchema`，并真调一个工具确认返回是
   `dbt.result/v1` 信封。单测是直接 import 函数，证明不了协议层挂得上 —— 上面那条旧库缺陷
@@ -123,10 +124,28 @@
 - `sqltk-store` 的建表 / 补列 / 建索引改为按 `PRAGMA user_version` 每库只做一次：
   单次调用 9~11ms → 约 5ms（原来 16 条 DDL 每次 `_conn()` 都跑一遍）。
 
+### 真实数据库连接与端到端验证（本次新增）
+
+- **连接器补 SQLite 真实连接后端**（标准库、零额外依赖）：`normalize_dialect` 早已把
+  `sqlite` 列为受支持方言，但 `_connect()` 只实现了 mysql / postgres，等于"声明支持却连不上"。
+  现在 `sqlite:///path/db.sqlite` / `sqlite://rel.db` / `sqlite://:memory:` 三种形式都能真连；
+  只读查询、EXPLAIN（走 SQLite 的 `EXPLAIN QUERY PLAN`，能识别全表扫描 SCAN）、
+  dry-run 事务回滚、变更窗口检查（SQLite 为嵌入式库，无实例级指标，**明确跳过而非假装通过**）全部打通。
+- **修一处真 bug**：`sqlite3.Cursor` 不是上下文管理器，原 `with conn.cursor() as cur:` 在 SQLite
+  后端直接 `TypeError`。改为显式 `conn.cursor()`，对 PyMySQL / psycopg 同样成立。
+  这条就是「测试全绿 ≠ 可用」—— 之前从没真连过库，所以漏了。
+- **新增 `tests/test_real_db.py`（已进 `make test` / CI）**：用**真实 SQLite 文件库**端到端验证
+  连接器——真连库、真 SELECT 结果归一化、真 EXPLAIN、dry-run **真回滚（断言数据未被改动）**、
+  commit **真落盘**、只读护栏在真实库上拦截写操作与 DDL。默认零基础设施；
+  设 `DBT_TEST_MYSQL_URL` / `DBT_TEST_POSTGRES_URL` 可额外验证真实 MySQL / Postgres 分支
+  （让实际厂商路径"测试就绪"，待有实例即可跑）。
+
 ### 已知未做
 
 - `sqltk-store` 的连接复用（当前每次 `_conn()` 约 5ms，且每次都跑一遍建表 DDL）。
   建表/补列/建索引已改为按 `PRAGMA user_version` 只做一次（9~11ms → 5ms）；
   剩下的开销是每次 open 文件的固定成本（本机 Windows 实测 connect 本身就要 6ms），
   再往下只能常驻连接，那会引入 WAL 增长与多进程写锁的复杂度，暂不做。
-- 真实数据库的连通性验证（现全部为无 DB 单测；MCP 挂载已由 `scripts/smoke-mcp.py` 覆盖）。
+- 真实 **MySQL / Postgres** 路径的端到端验证仍需真实实例：本机 3306 上的 MySQL 有密码且无可用
+  连接串，故 `tests/test_real_db.py` 默认只跑 SQLite 分支，厂商分支需设
+  `DBT_TEST_MYSQL_URL` / `DBT_TEST_POSTGRES_URL` 才执行（已写就，待有实例即跑）。

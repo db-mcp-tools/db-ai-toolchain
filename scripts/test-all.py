@@ -36,11 +36,13 @@ SUITES = [
     ("mcp-profile-hub", "tests/test_profile_hub.py"),
     ("sqltk-orchestrator", "tests/test_dbt_orchestrator.py"),
     ("(integration)", "tests/test_integration.py"),
+    ("(real-db)", "tests/test_real_db.py"),
 ]
 
 
 def run_one(repo: str, rel: str) -> tuple[bool, str, int, float]:
-    path = ROOT / repo / rel if repo != "(integration)" else ROOT / rel
+    # 括号标签（如 (integration) / (real-db)）表示测试位于仓库根目录的 tests/ 下
+    path = ROOT / rel if repo.startswith("(") else ROOT / repo / rel
     if not path.exists():
         return False, f"找不到 {path}", 0, 0.0
     t0 = time.time()
