@@ -110,7 +110,7 @@ mcp-sql-review call review_sql --args '{"sql": "SELECT * FROM t WHERE 1=1", "dia
 
 ```bash
 python scripts/dev-install.py            # 把所需的仓以 editable 方式装进当前 venv
-python scripts/test-all.py               # 依次跑 12 个测试套件（合计 304 项，逐套件报数）
+python scripts/test-all.py               # 依次跑 12 个测试套件（合计 322 项，逐套件报数）
 python scripts/test-all.py --only dbwatch
 python scripts/check-boundaries.py       # 检查跨 MCP import（应为 0）
 python scripts/smoke-mcp.py              # 用真实 MCP 客户端把 6 个 server 各挂一次

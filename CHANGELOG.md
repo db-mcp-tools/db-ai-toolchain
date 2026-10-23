@@ -69,6 +69,22 @@
   示例拆成 `safe_change.json`（L1 变更 + 干净查询 → warn，退出 0）与
   `find_problems.json`（故意写坏的 SQL → fail，退出 1）。
 
+### 规则误报治理（标准：判不出"这大概率是错的"就不报）
+
+规则跑在没有 schema 的静态分析里，所以按"判得出才断言"重写了四条最容易喊狼的规则。
+判定逻辑集中到 `rulebook/heuristics.py`（列名画像 / 点写判定 / 子查询相关性），三个分册共用。
+
+| 规则 | 原行为（误报） | 现在 |
+|---|---|---|
+| `DML002` 批量写无分批 | 任何没写 LIMIT 的 UPDATE/DELETE 都报 | 点写（等值命中键列 `id`/`*_no`/`*_code`…）不报；`table_rows ≤ 10000` 不报；范围 / OR / 函数 / 非键等值照报 |
+| `SUBQ001` SELECT 列表子查询 | 有子查询就报 | 只有**相关**子查询（引用外层列）才报 |
+| `SUBQ002` IN (子查询) | 有 `IN (子查询)` 就报 | 只有**相关**子查询才报（非相关会被 semi-join/materialize） |
+| `TYPE001` 隐式转换 | 任何字符串字面量都报 | 日期列（`*_at`/`*_date`/`*_ts`）与文本列（`*_name`/`*_code`/`*_no`/`status`…）跳过；数字形态字面量 + 数值列名才判 high |
+
+配套：每条规则的 `META.false_positive` 改写为"什么情况下不报"；新增 18 条用例，
+其中既有"不该报"，也有"该报的没被一起放过"（点写带引号的 `id='123'` 仍报隐式转换、
+大表仍报 DML002、相关子查询仍报）。标准写进 `docs/ARCHITECTURE.md §5.1`。
+
 ### 可用性
 
 - 13 个工具补齐 `docstring`（原 README 工具表里是 `—`，模型只能靠名字猜用途），
@@ -92,7 +108,7 @@
   6 个 MCP 与编排器 3.10+（`mcp` SDK 自身的下限，3.9 上装不上）。
 - `scripts/publish.py` 按依赖拓扑序构建 / 上传，`twine check` 全过；
   `docs/PUBLISHING.md` 记录流程与坑。
-- 测试：12 个套件 / 304 项，`make check` 一条命令跑完，并逐套件报出用例数
+- 测试：12 个套件 / 322 项，`make check` 一条命令跑完，并逐套件报出用例数
   （总数由 `scripts/test-all.py` 从各套件输出加总，不再手抄）。全部不依赖 pytest 与真实数据库。
 - **MCP 挂载冒烟** `scripts/smoke-mcp.py`：用真实 stdio 客户端把 6 个 server 各连一次，
   校验握手、工具数、每个工具的 `description` / `inputSchema`，并真调一个工具确认返回是
@@ -109,8 +125,6 @@
 
 ### 已知未做
 
-- 规则误报治理（`DML002` 对主键等值、`SUBQ001/002` 对非相关子查询、`TYPE001` 对日期列）；
-  需要先定"WHERE 非主键等值时该不该报"的产品标准。
 - `sqltk-store` 的连接复用（当前每次 `_conn()` 约 5ms，且每次都跑一遍建表 DDL）。
   建表/补列/建索引已改为按 `PRAGMA user_version` 只做一次（9~11ms → 5ms）；
   剩下的开销是每次 open 文件的固定成本（本机 Windows 实测 connect 本身就要 6ms），
