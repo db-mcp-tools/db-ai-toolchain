@@ -26,10 +26,13 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 SUITES = [
     ("sqltk-core", "tests/test_dbcore.py"),
     ("sqltk-core", "tests/test_rollback.py"),
+    ("sqltk-core", "tests/test_plan.py"),
+    ("sqltk-core", "tests/test_dialect_breadth.py"),
     ("sqltk-core", "tests/test_mcp_kit.py"),
     ("sqltk-store", "tests/test_dbstore.py"),
     ("sqltk-know", "tests/test_dbknow.py"),
     ("mcp-sql-review", "tests/test_sql_review.py"),
+    ("mcp-sql-review", "tests/test_custom_rules.py"),
     ("mcp-change-risk", "tests/test_change_risk.py"),
     ("mcp-dbwatch", "tests/test_dbwatch.py"),
     ("mcp-migration-diff", "tests/test_migration_diff.py"),

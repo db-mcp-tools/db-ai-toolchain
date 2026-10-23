@@ -108,7 +108,7 @@
   6 个 MCP 与编排器 3.10+（`mcp` SDK 自身的下限，3.9 上装不上）。
 - `scripts/publish.py` 按依赖拓扑序构建 / 上传，`twine check` 全过；
   `docs/PUBLISHING.md` 记录流程与坑。
-- 测试：13 个套件 / 355 项，`make check` 一条命令跑完，并逐套件报出用例数
+- 测试：17 个套件 / 494 项，`make check` 一条命令跑完，并逐套件报出用例数
   （总数由 `scripts/test-all.py` 从各套件输出加总，不再手抄）。除真实库套件外均不依赖 pytest；
   真实库套件用标准库 SQLite（零基础设施）端到端验证连接器公共路径。
 - **MCP 挂载冒烟** `scripts/smoke-mcp.py`：用真实 stdio 客户端把 6 个 server 各连一次，
@@ -198,6 +198,47 @@ Yearning/SQLE/Bytebase 的横向评测把"自动生成反向下发语句"列为�
 - `ReviewResult.to_dict()` 暴露 `blocking_count` / `advisory_count` / `fixable_count` / `has_blocking`，
   便于上层 / MCP 输出结构化结论。
 - 测试：在 `mcp-sql-review/tests/test_sql_review.py` 新增 P2 section（26 项），全量 **114 项通过**（原 88 + 26）。
+
+### 执行计划深度化（P3：评测高分项）
+
+对标 Archery / Bytebase 把查询计划真正整合进审核结论的评分维度，`explain()` 从
+「是否全扫」的一句话升级为**结构化计划 + 风险分级 + 缺失索引建议**：
+
+- `dbcore.plan.plan_from_explain(rows, columns, dialect, sql, table_rows)`：
+  把一次实时 EXPLAIN 的结果桥接到既有 `normalize_plan`（自动按方言选择
+  mysql 字典型 / postgres·sqlite 文本型解析），并在其上叠加：
+  - `grade_risk`：ok / warn / high 三级。大表（`DBT_LARGE_TABLE_ROWS`，默认 10 万行，
+    可环境变量调）全扫 → high；行数未知 → warn（不装懂）；小表全扫 → ok 并说明可接受。
+  - `suggest_missing_index`：基于 WHERE / JOIN ON 谓词列与计划里实际用到的索引求差集，
+    给出「表.列」级加索引建议；别名（`FROM orders o`）会解析回真实表名。
+  - 谓词列过滤掉本来就有索引的列（走索引的查询不产生建议）。
+- `connectors.explain()` 新增 `table_rows` 参数；返回值新增
+  `plan`（归一化结构）/ `risk_level` / `risk_issues` / `plan_suggestions` / `estimated_rows`。
+- 测试：新增 `sqltk-core/tests/test_plan.py`（19 项）——mysql 表格式 / postgres 文本
+  fixture 解析 + 风险 + 建议，sqlite 真实文件库端到端（5 万行大表全扫=high、
+  走索引=ok 且无多余建议）；接入 `make test` 套件。
+
+### 多方言广度 + 自定义规则 DSL（P5：对标 CloudDM 差异化）
+
+- **多方言**：`SUPPORTED` 从 5 个扩到 **22 个**——新增 tsql(SQL Server)、bigquery、
+  snowflake、hive、spark、spark2、databricks、presto、trino、redshift、duckdb、
+  teradata、athena、materialize、risingwave、dremio、exasol；Doris/StarRocks
+  归一到 mysql 家族（协议兼容，复用全部 MySQL 规则）。
+  新增 `connector_status(dialect)` 报出能力边界：`connectable`（mysql/postgres/sqlite）
+  vs `review-only`；review-only 方言连接时给出明确报错而不是含糊的"不支持"。
+  评测对照：Yearning 的 MySQL-only 是它最大失分项。
+- **自定义规则 DSL**：新增 `sql_review/rulebook/custom.py`——声明式 JSON/YAML
+  规则清单（`load_rules` + `compile_rules`），五类 matcher：`statements`
+  （禁语句类型）/ `require_where`（写操作必须带 WHERE）/ `forbid_functions` /
+  `forbid_columns` / `forbid_patterns`（正则）。配置错误（id 冲突、非法 severity、
+  非法正则）**启动即报错**，不静默漏检；`review_sql(custom_rules=...)` 与内置规则
+  一同执行，`engines` 方言限定照常生效。诚实性约束：自定义 finding 一律
+  `fixable=False`（不承诺自动修复）。MCP 的 `review_sql` / `review_batch` 工具
+  已透传 `custom_rules` 参数。
+  评测对照：CloudDM 靠"规则可自定义"差异化，这里用可穷举、可测试的声明式
+  matcher 组合实现同等能力。
+- 测试：新增 `sqltk-core/tests/test_dialect_breadth.py`（45 项）、
+  `mcp-sql-review/tests/test_custom_rules.py`（28 项）；均接入 `make test`。
 
 ### 已知未做
 
