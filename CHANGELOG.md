@@ -175,6 +175,30 @@ Yearning/SQLE/Bytebase 的横向评测把"自动生成反向下发语句"列为�
 - 新增 **`sqltk-core/tests/test_rollback.py`**（21 项，真实 SQLite 文件库端到端）：
   覆盖三类反向、库未被改动、DDL 被拒、反向语句可执行、端到端还原；并接入 `make test` 套件。
 
+### finding 规范化（P2：评测高分项）
+
+横向评测（CloudDM/Bytebase）把「问题定位到行 + 列」「严重级别（阻断 / 提示）」「是否可自动修」
+列为高分项；FSE 2026 又警告"自动修复是弱环，别过度承诺"。本轮把每条 finding 从「字符串消息」
+升级为**结构化、可定位、可分级、诚实标注可修性**的对象：
+
+- **列定位 `col`**：`dbcore.dialect` 新增 `col_of()`（与 `line_of` 对称，取 sqlglot 节点 meta 的 `col`，
+  缺失时向下找最近带 meta 的子节点）。`Finding` 新增 `col` 字段，`_mk` 自动填充——每条 finding
+  现在精确落到 token 的行与列。
+- **阻断 / 提示分级**：`ReviewResult` 新增 `blocking_findings` / `advisory_findings` / `blocking_count` /
+  `advisory_count` / `has_blocking`。`has_blocking = (存在 blocker 级 finding)`，供 CI 门禁直接判失败
+  （对标 Bytebase 的"阻断级即禁止上线"）。
+- **可修性标注（保守，对标 FSE）**：`Finding` 新增 `auto_fix: str | None` 与 `fixable` 属性
+  （`auto_fix is not None` 即为可修）。默认**绝大多数规则 `fixable=False`**——
+  因为 SQL 语义修复风险高（FSE 实证规则修复误修率 5.3%），本工具不对自动修复过度承诺。
+  仅给两条**确定性机械改写**（零语义风险）的规则开放 `auto_fix`：
+  - `MY001`（ALTER 未指定 ALGORITHM）→ 自动追加 `ALGORITHM=INPLACE, LOCK=NONE`
+  - `PG001`（CREATE INDEX 未用 CONCURRENTLY）→ 自动改为 `CREATE INDEX CONCURRENTLY`
+  两条 `auto_fix` 均为子句追加 / 关键字插入，不改任何逻辑，且 `auto_fix` 后语句经 `review_sql`
+  自洽（不再触发自身规则）。
+- `ReviewResult.to_dict()` 暴露 `blocking_count` / `advisory_count` / `fixable_count` / `has_blocking`，
+  便于上层 / MCP 输出结构化结论。
+- 测试：在 `mcp-sql-review/tests/test_sql_review.py` 新增 P2 section（26 项），全量 **114 项通过**（原 88 + 26）。
+
 ### 已知未做
 
 - `sqltk-store` 的连接复用（当前每次 `_conn()` 约 5ms，且每次都跑一遍建表 DDL）。
