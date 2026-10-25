@@ -108,7 +108,7 @@
   6 个 MCP 与编排器 3.10+（`mcp` SDK 自身的下限，3.9 上装不上）。
 - `scripts/publish.py` 按依赖拓扑序构建 / 上传，`twine check` 全过；
   `docs/PUBLISHING.md` 记录流程与坑。
-- 测试：17 个套件 / 494 项，`make check` 一条命令跑完，并逐套件报出用例数
+- 测试：18 个套件 / 529 项，`make check` 一条命令跑完，并逐套件报出用例数
   （总数由 `scripts/test-all.py` 从各套件输出加总，不再手抄）。除真实库套件外均不依赖 pytest；
   真实库套件用标准库 SQLite（零基础设施）端到端验证连接器公共路径。
 - **MCP 挂载冒烟** `scripts/smoke-mcp.py`：用真实 stdio 客户端把 6 个 server 各连一次，
@@ -239,6 +239,42 @@ Yearning/SQLE/Bytebase 的横向评测把"自动生成反向下发语句"列为�
   matcher 组合实现同等能力。
 - 测试：新增 `sqltk-core/tests/test_dialect_breadth.py`（45 项）、
   `mcp-sql-review/tests/test_custom_rules.py`（28 项）；均接入 `make test`。
+
+### 语义校验层（P4：评测驱动优化 —— 补"规则只查形态、不查语义"的缺口）
+
+评测结论（SQLFlex arXiv 2603.16155 / FSE 2026）提示两条铁律，本层据此设计：
+1. 纯规则 lint 只查「形态」，漏掉「语义」层面的错误（结果是否正确、是否符合作者意图）；
+2. 纯 LLM lint 精确率仅 ~0.307（误报极高），**绝不能当卡口**——否则 CI 会被噪声淹没。
+
+因此本层分两级，默认都**不阻断**（severity 最高 low，绝不为 blocker），且默认整体关闭：
+
+- **确定性语义检查（SEM\*）**：纯 AST、零密钥、可穷举、可测试，覆盖形态规则触及不到的
+  语义陷阱。落地 4 条（与内置规则**不重复**，已核对 SEL006 等）：
+  - `SEM001`：`= NULL` / `<> NULL` 用比较运算符判 NULL，永远得不到预期结果（恒假/漏行）。
+  - `SEM003`：`BETWEEN 'date' AND 'date'`（上界是纯日期）→ 右边界只到当天 00:00:00，
+    漏掉当天其余时段（off-by-one）；上界已带 `23:59:59` 等精确时刻则**不报**（误报治理）。
+  - `SEM004`：`UNION`（默认去重）而非 `UNION ALL`——无去重需求时多一次排序去重，且可能
+    意外合并重复行（severity=info）。
+  - `SEM005`：`HAVING` 无 `GROUP BY`——退化为整表聚合单行过滤，多半是忘了分组。
+  - 注：`LIMIT/OFFSET 无 ORDER BY` 已有内置 `SEL006`（medium）覆盖，本层**不再造 SEM002**，
+    遵循"同一条问题只在一个地方报"的约定。
+- **可选 LLM 语义复核（AI\*）**：仅当显式配置 provider（环境变量 `DBT_LLM_PROVIDER` 或
+  调用时传入 `LLMSemanticProvider` 实例）才跑；产出一律 advisory(info)，`source="llm"`，
+  **绝不进入 CI 阻断判定**。provider 接口可插拔，当前实现 `OpenAIProvider`（OpenAI 及任何
+  OpenAI 兼容端点：DeepSeek / 通义 / 本地 llama 等），`openai` 为**可选依赖**，未安装时
+  构造即报错而非静默；网络/解析失败时降级为「无建议」，绝不影响主流程。
+  **保底 clamp**：编排层在合并 LLM 发现时强制把 severity 压到 info（无论 provider 返回什么），
+  从机制上杜绝任何来源把 LLM 建议升级为阻断级。
+
+- 集成方式（保持 P0 精度门禁 F1 不变）：
+  - `review_sql(semantic=True)` 跑确定性 SEM\*；`semantic={"provider": ...}` 额外跑 LLM。
+  - 默认 `semantic=False` 完全不触发本层（基准套件仍只调默认入口，F1 维持 1.000）。
+  - `ReviewResult` 新增 `semantic_meta`（ran_llm / provider / dialect）与 `semantic_findings`
+    属性；`to_dict` 暴露 `semantic` 字段；`Finding` 新增可选 `source`（semantic/llm/None）。
+  - MCP `review_sql` / `review_batch` 工具新增 `semantic: bool` 参数并透传。
+- 测试：新增 `mcp-sql-review/tests/test_semantic.py`（35 项，全量 **18 个套件**之一），含
+  逐条 SEM 正反样例、默认关闭回归、语义层永不阻断断言、LLM 离线（StubProvider）与
+  OpenAIProvider 缺依赖报错验证。
 
 ### 已知未做
 

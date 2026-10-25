@@ -33,6 +33,7 @@ SUITES = [
     ("sqltk-know", "tests/test_dbknow.py"),
     ("mcp-sql-review", "tests/test_sql_review.py"),
     ("mcp-sql-review", "tests/test_custom_rules.py"),
+    ("mcp-sql-review", "tests/test_semantic.py"),
     ("mcp-change-risk", "tests/test_change_risk.py"),
     ("mcp-dbwatch", "tests/test_dbwatch.py"),
     ("mcp-migration-diff", "tests/test_migration_diff.py"),
