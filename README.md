@@ -7,20 +7,36 @@
 
 ## 仓库清单
 
-| 仓库 | 类型 | 规模 | 干什么 |
-|---|---|---|---|
-| [`sqltk-core`](sqltk-core/) | 库 | 10 模块 | 协议信封 / 方言归一 / SQL 指纹 / 只读连库 / AST / 执行计划归一 / **MCP 运行时外壳** |
-| [`sqltk-store`](sqltk-store/) | 库 | 1 模块 | 统一档案存储（SQLite，零依赖）—— 所有 MCP 的唯一数据落点 |
-| [`sqltk-know`](sqltk-know/) | 库 | 3 模块 | 引擎阈值 / 指标字典 / 18 种故障指纹（零依赖，Tier0 的来源） |
-| [`mcp-sql-review`](mcp-sql-review/) | **MCP** | 14 工具 | SQL 静态体检 → 修法 → 验证 → 计划对比 → 索引建议 |
-| [`mcp-change-risk`](mcp-change-risk/) | **MCP** | 13 工具 | 变更风险因子模型 + 执行状态机（预检/干跑/灰度/回滚） |
-| [`mcp-dbwatch`](mcp-dbwatch/) | **MCP** | 15 工具 | DBA 值守：快照 → 定级 → 根因 → 健康分 → 事故报告 |
-| [`mcp-migration-diff`](mcp-migration-diff/) | **MCP** | 12 工具 | 国产化迁移：类型映射 → 语法 Gap → 校验方案 → 工作量 |
-| [`mcp-data-semantics`](mcp-data-semantics/) | **MCP** | 13 工具 | 数据口径治理：口径 diff → 扇出检测 → 下钻 → 契约固化 |
-| [`mcp-profile-hub`](mcp-profile-hub/) | **MCP** | 24 工具 | 档案中枢：实例档案 / 分位数基线 / 技术债账本 / 知识包 |
-| [`sqltk-orchestrator`](sqltk-orchestrator/) | 可选 | — | 跨 MCP 编排（按 `next_actions` 追链 + recipe）。**要装齐 6 个 MCP** |
+> **这是 11 个独立的 git 仓库，不是一个 monorepo。** 本仓库（`db-ai-toolchain`）是**治理 / 编排根**，只含 `docs/`、`scripts/`、`tests/`、CI 与文档；真正的代码在下面 10 个独立仓库里，各自有独立的版本、CI 与发布。它们**不是** git submodule——clone 本仓库不会自动带上子仓代码（见下方「一次 clone 全部」）。
+
+| 仓库 | GitHub | 类型 | 规模 | 干什么 |
+|---|---|---|---|---|
+| `sqltk-core` | [db-mcp-tools/sqltk-core](https://github.com/db-mcp-tools/sqltk-core) | 库 | 10 模块 | 协议信封 / 方言归一 / SQL 指纹 / 只读连库 / AST / 执行计划归一 / **MCP 运行时外壳** |
+| `sqltk-store` | [db-mcp-tools/sqltk-store](https://github.com/db-mcp-tools/sqltk-store) | 库 | 1 模块 | 统一档案存储（SQLite，零依赖）—— 所有 MCP 的唯一数据落点 |
+| `sqltk-know` | [db-mcp-tools/sqltk-know](https://github.com/db-mcp-tools/sqltk-know) | 库 | 3 模块 | 引擎阈值 / 指标字典 / 18 种故障指纹（零依赖，Tier0 的来源） |
+| `mcp-sql-review` | [db-mcp-tools/mcp-sql-review](https://github.com/db-mcp-tools/mcp-sql-review) | **MCP** | 14 工具 | SQL 静态体检 → 修法 → 验证 → 计划对比 → 索引建议 |
+| `mcp-change-risk` | [db-mcp-tools/mcp-change-risk](https://github.com/db-mcp-tools/mcp-change-risk) | **MCP** | 13 工具 | 变更风险因子模型 + 执行状态机（预检/干跑/灰度/回滚） |
+| `mcp-dbwatch` | [db-mcp-tools/mcp-dbwatch](https://github.com/db-mcp-tools/mcp-dbwatch) | **MCP** | 15 工具 | DBA 值守：快照 → 定级 → 根因 → 健康分 → 事故报告 |
+| `mcp-migration-diff` | [db-mcp-tools/mcp-migration-diff](https://github.com/db-mcp-tools/mcp-migration-diff) | **MCP** | 12 工具 | 国产化迁移：类型映射 → 语法 Gap → 校验方案 → 工作量 |
+| `mcp-data-semantics` | [db-mcp-tools/mcp-data-semantics](https://github.com/db-mcp-tools/mcp-data-semantics) | **MCP** | 13 工具 | 数据口径治理：口径 diff → 扇出检测 → 下钻 → 契约固化 |
+| `mcp-profile-hub` | [db-mcp-tools/mcp-profile-hub](https://github.com/db-mcp-tools/mcp-profile-hub) | **MCP** | 24 工具 | 档案中枢：实例档案 / 分位数基线 / 技术债账本 / 知识包 |
+| `sqltk-orchestrator` | [db-mcp-tools/sqltk-orchestrator](https://github.com/db-mcp-tools/sqltk-orchestrator) | 可选 | — | 跨 MCP 编排（按 `next_actions` 追链 + recipe）。**要装齐 6 个 MCP** |
 
 合计 **6 个 MCP / 91 个工具**，共享库 3 个。装任意一个 MCP，只会带上 `sqltk-core`（含 MCP 外壳）、`sqltk-store`，需要历史数据的再带 `sqltk-know`。
+
+### 一次 clone 全部 11 个仓库
+
+```bash
+ORG=db-mcp-tools
+for r in db-ai-toolchain sqltk-core sqltk-store sqltk-know \
+         mcp-sql-review mcp-change-risk mcp-dbwatch mcp-migration-diff \
+         mcp-data-semantics mcp-profile-hub sqltk-orchestrator; do
+  git clone "https://github.com/$ORG/$r.git"
+done
+```
+
+> 若想用 submodule 一键 `clone --recursive` 拿全，把上面 `git clone` 换成在根目录
+> `git submodule add` 即可（本工具链默认不启用 submodule，以保持各仓独立发版）。
 
 ### 命名：发行名与 import 名是两件事
 
@@ -110,7 +126,7 @@ mcp-sql-review call review_sql --args '{"sql": "SELECT * FROM t WHERE 1=1", "dia
 
 ```bash
 python scripts/dev-install.py            # 把所需的仓以 editable 方式装进当前 venv
-python scripts/test-all.py               # 依次跑 12 个测试套件（合计 322 项，逐套件报数）
+python scripts/test-all.py               # 依次跑 18 个测试套件（合计 529 项，逐套件报数）
 python scripts/test-all.py --only dbwatch
 python scripts/check-boundaries.py       # 检查跨 MCP import（应为 0）
 python scripts/smoke-mcp.py              # 用真实 MCP 客户端把 6 个 server 各挂一次
