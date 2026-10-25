@@ -35,6 +35,12 @@ for r in db-ai-toolchain sqltk-core sqltk-store sqltk-know \
 done
 ```
 
+> 也可以直接跑封装好的脚本（已存在目录自动跳过，可反复执行）：
+> `bash scripts/clone-all.sh [目标父目录]`。
+> 批量设置 11 个仓库的 GitHub 简介 / 话题标签（topics）用：
+> `GITHUB_TOKEN=ghp_xxx bash scripts/set-repo-meta.sh`（description 与
+> topics 来自 `scripts/repo_config.py`，单一真源）。
+
 > 若想用 submodule 一键 `clone --recursive` 拿全，把上面 `git clone` 换成在根目录
 > `git submodule add` 即可（本工具链默认不启用 submodule，以保持各仓独立发版）。
 
