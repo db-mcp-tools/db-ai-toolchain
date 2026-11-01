@@ -13,12 +13,14 @@
 #
 # 行为：
 #   - 已存在的目录自动跳过（可反复跑，不会覆盖本地改动）
-#   - 全部为公开仓库，clone 不需要 token
+#   - 使用 SSH 协议（git@github.com:...），需先把本机 SSH 公钥加到 GitHub；
+#     若想用 HTTPS，把下面 CLONE_BASE 改成 https://github.com/$ORG 即可
 #   - 克隆完成后打印一句如何进入根仓库的提示
 # =============================================================================
 set -euo pipefail
 
 ORG=db-mcp-tools
+CLONE_BASE="git@github.com:$ORG"
 DEST="${1:-${DEST:-.}}"
 
 REPOS=(
@@ -42,7 +44,7 @@ for r in "${REPOS[@]}"; do
     echo "跳过（已存在）: $r"
   else
     echo "clone: $r"
-    git clone "https://github.com/$ORG/$r.git" "$DEST/$r"
+    git clone "$CLONE_BASE/$r.git" "$DEST/$r"
   fi
 done
 

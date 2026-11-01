@@ -30,7 +30,7 @@ AUTHORS = [{"name": "罗文星", "email": "1172566410@qq.com"}]
 # 组织名。子仓是独立仓库，所以 URL 由 owner + 仓名拼出来。
 # 尚未确定时保留占位符：gen 会给出警告，publish --upload pypi 会拒绝上传
 # （带着死链上 PyPI 比晚发一天更糟）。
-GH_OWNER = "Apollo-lwx"
+GH_OWNER = "db-mcp-tools"
 META_REPO = "db-ai-toolchain"
 
 # 纯库支持 3.9；依赖 mcp SDK 的仓必须 3.10（SDK 自身要求，已实测：
@@ -262,7 +262,7 @@ def repo_urls(repo: dict) -> dict:
         "Homepage": f"{base}/{repo['name']}",
         "Repository": f"{base}/{repo['name']}",
         "Issues": f"{base}/{repo['name']}/issues",
-        "Changelog": f"{base}/{META_REPO}/blob/main/CHANGELOG.md",
+        "Changelog": f"{base}/{META_REPO}/blob/master/CHANGELOG.md",
     }
 
 
