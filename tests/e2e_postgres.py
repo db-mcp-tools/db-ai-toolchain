@@ -21,18 +21,47 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "packages"))
+# 兜底搜索路径（仅文件直载用，不优先于 pip 安装的 canonical 包）
+sys.path.append(str(ROOT / "servers"))
+sys.path.append(str(ROOT / "packages"))
 
-from dbcore.advisor import advise_indexes  # noqa: E402
-from dbcore.connectors import ConnectionSpec, run_readonly  # noqa: E402
-from dbcore.guard import GuardError  # noqa: E402
-from dbcore.verify import equivalence_check, plan_compare, plan_metrics  # noqa: E402
-from dbcore.connectors import precheck_change_window  # noqa: E402
+from dbcore.connectors import ConnectionSpec, run_readonly, precheck_change_window
+from dbcore.guard import GuardError
+
+
+def _import_sql_review(mod: str, *names: str) -> dict:
+    """优先用 canonical 安装包；失败时从 sql_review/<mod>.py 直接文件加载，
+    绕过 sql_review/__init__ 对 sqltk-store 的重依赖（本地最小验证用）。"""
+    try:
+        pkg = __import__("sql_review", fromlist=[mod])
+        sub = getattr(pkg, mod)
+        return {n: getattr(sub, n) for n in names}
+    except Exception:  # noqa: BLE001
+        pass
+    for base in sys.path:
+        cand = os.path.join(base, "sql_review", f"{mod}.py")
+        if os.path.isfile(cand):
+            spec = importlib.util.spec_from_file_location(f"_sr_{mod}", cand)
+            m = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(m)
+            return {n: getattr(m, n) for n in names}
+    raise ImportError(f"sql_review.{mod}")
+
+
+try:
+    _v = _import_sql_review("verify", "equivalence_check", "plan_compare", "plan_metrics")
+    equivalence_check, plan_compare, plan_metrics = (
+        _v["equivalence_check"], _v["plan_compare"], _v["plan_metrics"])
+    advise_indexes = _import_sql_review("advisor", "advise_indexes")["advise_indexes"]
+except ImportError as e:  # noqa: BLE001
+    print(f"SKIP: 无法导入 sql_review.verify/advisor（需 pip install -e sqltk-core mcp-sql-review）：{e}")
+    sys.exit(0)
 
 URL = os.environ.get("DBT_TEST_POSTGRES_URL", "postgres://postgres:root@127.0.0.1:5433/test")
 
@@ -87,12 +116,17 @@ def setup() -> None:
 
 
 def main() -> None:
+    env_url = os.environ.get("DBT_TEST_POSTGRES_URL")
     try:
         spec = ConnectionSpec(URL)
         run_readonly(URL, "SELECT 1", max_rows=1)
     except Exception as exc:  # noqa: BLE001
-        print(f"SKIP: 无法连接 PostgreSQL（{URL}）：{type(exc).__name__}: {exc}")
-        print("      请先启动 PostgreSQL 并设置 DBT_TEST_POSTGRES_URL；无 DB 时跳过本测试。")
+        # 已显式给定 URL 却连不上 → 视为测试失败（防 CI 假绿）；
+        # 完全没给 URL → 视为「无 DB 环境」，优雅跳过。
+        if env_url:
+            print(f"FAIL: 已设置 DBT_TEST_POSTGRES_URL 但无法连接 PostgreSQL（{URL}）：{type(exc).__name__}: {exc}")
+            sys.exit(1)
+        print(f"SKIP: 无法连接 PostgreSQL（{URL}）：{exc}；请先启动 PostgreSQL 并设置 DBT_TEST_POSTGRES_URL。")
         sys.exit(0)
 
     print(f"== 连接 {spec.instance_id} ==")

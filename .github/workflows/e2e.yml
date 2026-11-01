@@ -1,0 +1,93 @@
+name: e2e
+
+# 端到端验证：连真实 MySQL / PostgreSQL 跑 dbcore 连库工具 + 校验 MCP 服务接线。
+# 与 ci.yml（单测 / 元数据 / 依赖边界）互补，单独成文件，避免被 pyproject 生成逻辑覆盖。
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: e2e（真实 MySQL + PostgreSQL）
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: root
+          POSTGRES_USER: postgres
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d test"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 兄弟仓各自是独立仓库，先取回原位（tests/ 依赖这个布局）
+      - name: 取回 sqltk-core
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/sqltk-core
+          path: sqltk-core
+      - name: 取回 sqltk-store
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/sqltk-store
+          path: sqltk-store
+      - name: 取回 sqltk-know
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/sqltk-know
+          path: sqltk-know
+      - name: 取回 mcp-sql-review
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/mcp-sql-review
+          path: mcp-sql-review
+
+      - name: 安装（按依赖拓扑序 + 测试驱动）
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e sqltk-core
+          pip install -e sqltk-store
+          pip install -e sqltk-know
+          pip install -e mcp-sql-review
+          pip install pymysql "psycopg[binary]"
+
+      - name: e2e MySQL（连真实库）
+        env:
+          DBT_TEST_MYSQL_URL: "mysql://root:root@127.0.0.1:3306/test"
+        run: python tests/e2e_mysql.py
+
+      - name: e2e PostgreSQL（连真实库）
+        env:
+          DBT_TEST_POSTGRES_URL: "postgres://postgres:root@127.0.0.1:5432/test"
+        run: python tests/e2e_postgres.py
+
+      - name: e2e MCP 服务接线
+        run: python tests/e2e_server.py
