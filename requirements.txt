@@ -1,0 +1,6 @@
+mcp>=1.0.0
+sqlglot>=25.0.0
+
+# 可选：需要真实连库时安装
+# pymysql>=1.1.0
+# psycopg[binary]>=3.1
